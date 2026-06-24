@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hệ Thống Quản Lý Bệnh Nhân - EMR</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#0d9488', 
+                        secondary: '#0f766e', 
+                        accent: '#f43f5e', 
+                        surface: '#f8fafc', 
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f1f5f9; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* Navigation active states */
+        .nav-item.active { background-color: #e0f2fe; color: #0369a1; border-right: 4px solid #0284c7; }
+        .tab-btn.active { border-bottom: 2px solid #0d9488; color: #0d9488; font-weight: 600; }
+        
+        /* Animations */
+        .fade-in { animation: fadeIn 0.2s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .modal-enter { animation: modalEnter 0.2s ease-out forwards; }
+        @keyframes modalEnter { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+        
+        /* Hover reveal actions for optimized workflow */
+        .action-group { opacity: 0; transition: opacity 0.2s ease; }
+        .hover-reveal-container:hover .action-group { opacity: 1; }
+    </style>
+</head>
+<body class="flex h-screen overflow-hidden text-slate-800">
+
+    <aside class="w-64 bg-white border-r border-slate-200 flex flex-col shadow-sm z-20 hidden md:flex">
+        <div class="h-16 flex items-center px-6 border-b border-slate-100 cursor-pointer hover:bg-slate-50 transition-colors" onclick="app.navigate('dashboard')">
+            <i class="fa-solid fa-hospital-user text-primary text-2xl mr-3"></i>
+            <span class="font-bold text-lg tracking-tight text-slate-800">MediCare Pro</span>
+        </div>
+        <nav class="flex-1 py-4">
+            <ul class="space-y-1">
+                <li>
+                    <a href="#" onclick="app.navigate('dashboard')" id="nav-dashboard" class="nav-item active flex items-center px-6 py-3 text-slate-600 hover:bg-slate-50 transition-colors">
+                        <i class="fa-solid fa-chart-pie w-6"></i> Dashboard
+                    </a>
+                </li>
+                <li>
+                    <a href="#" onclick="app.navigate('patients')" id="nav-patients" class="nav-item flex items-center px-6 py-3 text-slate-600 hover:bg-slate-50 transition-colors">
+                        <i class="fa-solid fa-users w-6"></i> Quản Lý Bệnh Nhân
+                    </a>
+                </li>
+                <li>
+                    <a href="#" onclick="app.navigate('appointments')" id="nav-appointments" class="nav-item flex items-center px-6 py-3 text-slate-600 hover:bg-slate-50 transition-colors">
+                        <i class="fa-regular fa-calendar-check w-6"></i> Quản Lý Lịch Hẹn
+                    </a>
+                </li>
+            </ul>
+        </nav>
+        <div class="p-4 border-t border-slate-100">
+            <button onclick="app.openAddPatient()" class="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2">
+                <i class="fa-solid fa-plus"></i> Thêm Bệnh Nhân Nhanh
+            </button>
+        </div>
+    </aside>
+
+    <main class="flex-1 flex flex-col h-screen relative overflow-hidden bg-slate-50">
+        <!-- Mobile Header -->
+        <header class="md:hidden h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 z-20 shadow-sm">
+            <div class="flex items-center">
+                <i class="fa-solid fa-hospital-user text-primary text-xl mr-2"></i>
+                <span class="font-bold text-slate-800">MediCare Pro</span>
+            </div>
+            <button class="text-slate-500"><i class="fa-solid fa-bars text-xl"></i></button>
+        </header>
+
+        <!-- View Containers -->
+        <div id="view-dashboard" class="view-section p-4 md:p-8 overflow-y-auto h-full fade-in block"></div>
+        <div id="view-patients" class="view-section p-4 md:p-8 overflow-y-auto h-full fade-in hidden"></div>
+        <div id="view-appointments" class="view-section p-4 md:p-8 overflow-y-auto h-full fade-in hidden"></div>
+        <div id="view-patient-detail" class="view-section p-0 overflow-y-auto h-full fade-in hidden"></div>
+    </main>
+
+    <!-- Modal Thêm/Sửa Bệnh Nhân -->
+    <div id="modal-patient" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 hidden flex-col items-center justify-center">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 modal-enter overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="px-6 py-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
+                <h3 id="modal-patient-title" class="font-bold text-lg text-slate-800">Thêm Bệnh Nhân Mới</h3>
+                <button onclick="ui.closeModal('modal-patient')" class="text-slate-400 hover:text-rose-500 transition-colors"><i class="fa-solid fa-xmark text-xl"></i></button>
+            </div>
+            <div class="p-6 overflow-y-auto">
+                <form id="form-patient" class="space-y-4">
+                    <input type="hidden" id="inp_p_id">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Họ và Tên <span class="text-rose-500">*</span></label>
+                        <input type="text" id="inp_p_name" required class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Giới tính</label>
+                            <select id="inp_p_gender" class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                                <option value="Nam">Nam</option><option value="Nữ">Nữ</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Ngày sinh</label>
+                            <input type="date" id="inp_p_dob" required class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Số điện thoại</label>
+                            <input type="tel" id="inp_p_phone" class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 mb-1">Nhóm máu</label>
+                            <select id="inp_p_blood" class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                                <option value="Chưa rõ">Chưa rõ</option><option value="A+">A+</option><option value="B+">B+</option><option value="O+">O+</option><option value="AB+">AB+</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Chẩn đoán nền</label>
+                        <input type="text" id="inp_p_diag" placeholder="Vd: Tăng huyết áp..." class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Phân loại Rủi ro (Tối ưu Dashboard)</label>
+                        <select id="inp_p_risk" class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                            <option value="Low">Low (An toàn)</option><option value="Medium">Medium (Trung bình)</option><option value="High">High (Nguy cơ cao)</option>
+                        </select>
+                    </div>
+                </form>
+            </div>
+            <div class="px-6 py-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-3">
+                <button onclick="ui.closeModal('modal-patient')" class="px-4 py-2 border border-slate-300 text-slate-700 rounded-md hover:bg-slate-100">Hủy</button>
+                <button onclick="app.savePatient()" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-secondary shadow-sm">Lưu Hồ Sơ</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Thêm/Sửa Lượt Khám -->
+    <div id="modal-visit" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 hidden flex-col items-center justify-center">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 modal-enter overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="px-6 py-4 border-b border-slate-200 flex justify-between items-center bg-teal-50">
+                <h3 id="modal-visit-title" class="font-bold text-lg text-teal-800"><i class="fa-solid fa-stethoscope mr-2"></i>Phiên Khám</h3>
+                <button onclick="ui.closeModal('modal-visit')" class="text-slate-400 hover:text-rose-500"><i class="fa-solid fa-xmark text-xl"></i></button>
+            </div>
+            <div class="p-6 overflow-y-auto">
+                <form id="form-visit" class="space-y-4">
+                    <input type="hidden" id="inp_v_id">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Ngày Khám</label>
+                        <input type="date" id="inp_v_date" required class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary bg-slate-50">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Lý do khám (Chief Complaint) <span class="text-rose-500">*</span></label>
+                        <textarea id="inp_v_complaint" rows="2" required class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"></textarea>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Đánh giá lâm sàng (Assessment)</label>
+                        <textarea id="inp_v_assessment" rows="2" class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"></textarea>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Kế hoạch điều trị (Plan)</label>
+                        <textarea id="inp_v_plan" rows="2" class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="px-6 py-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-3">
+                <button onclick="ui.closeModal('modal-visit')" class="px-4 py-2 border border-slate-300 text-slate-700 rounded-md hover:bg-slate-100">Hủy</button>
+                <button onclick="app.saveVisit()" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-secondary shadow-sm">Lưu Phiên Khám</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Thêm/Sửa Lịch Hẹn -->
+    <div id="modal-appointment" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 hidden flex-col items-center justify-center">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 modal-enter overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="px-6 py-4 border-b border-slate-200 flex justify-between items-center bg-blue-50">
+                <h3 id="modal-appointment-title" class="font-bold text-lg text-blue-800"><i class="fa-regular fa-calendar-plus mr-2"></i>Lịch Hẹn</h3>
+                <button onclick="ui.closeModal('modal-appointment')" class="text-slate-400 hover:text-rose-500"><i class="fa-solid fa-xmark text-xl"></i></button>
+            </div>
+            <div class="p-6 overflow-y-auto">
+                <form id="form-appointment" class="space-y-4">
+                    <input type="hidden" id="inp_a_id">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Bệnh Nhân <span class="text-rose-500">*</span></label>
+                        <select id="inp_a_patient" required class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50"></select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Ngày Hẹn <span class="text-rose-500">*</span></label>
+                        <input type="date" id="inp_a_date" required class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Mục đích hẹn</label>
+                        <input type="text" id="inp_a_purpose" required placeholder="Vd: Tái khám định kỳ..." class="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                </form>
+            </div>
+            <div class="px-6 py-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-3">
+                <button onclick="ui.closeModal('modal-appointment')" class="px-4 py-2 border border-slate-300 text-slate-700 rounded-md hover:bg-slate-100">Hủy</button>
+                <button onclick="app.saveAppointment()" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 shadow-sm">Lưu Lịch Hẹn</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Xác nhận Xóa (Safe Delete Custom Modal) -->
+    <div id="modal-confirm" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] hidden flex-col items-center justify-center">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm mx-4 modal-enter overflow-hidden">
+            <div class="p-6 text-center">
+                <div class="w-16 h-16 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center text-3xl mx-auto mb-4">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                </div>
+                <h3 class="font-bold text-lg text-slate-800 mb-2">Xác nhận xóa dữ liệu</h3>
+                <p class="text-slate-500 text-sm">Bạn có chắc chắn muốn xóa bản ghi này? Hành động này không thể hoàn tác.</p>
+            </div>
+            <div class="px-6 py-4 bg-slate-50 flex justify-center gap-3 border-t border-slate-100">
+                <button onclick="ui.closeModal('modal-confirm')" class="px-6 py-2 border border-slate-300 text-slate-700 rounded-md hover:bg-slate-100 transition-colors font-medium">Hủy</button>
+                <button onclick="app.confirmDelete()" class="px-6 py-2 bg-rose-600 text-white rounded-md hover:bg-rose-700 transition-colors shadow-sm font-medium">Xóa</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed top-4 right-4 z-[70] flex flex-col gap-2 pointer-events-none"></div>
+
+    <script>
+        // Lấy dữ liệu từ LocalStorage nếu có, nếu không thì mảng trống
+        const DB = {
+            patients: JSON.parse(localStorage.getItem('medicare_patients')) || [], 
+            visits: JSON.parse(localStorage.getItem('medicare_visits')) || [], 
+            appointments: JSON.parse(localStorage.getItem('medicare_appointments')) || []
+        };
+
+        // Hàm lưu dữ liệu ngược lại vào ổ cứng (LocalStorage)
+        const saveDB = () => {
+            localStorage.setItem('medicare_patients', JSON.stringify(DB.patients));
+            localStorage.setItem('medicare_visits', JSON.stringify(DB.visits));
+            localStorage.setItem('medicare_appointments', JSON.stringify(DB.appointments));
+        };
+
+        function seedDatabase(num) {
+            const firstNames = ['Nguyễn', 'Trần', 'Lê', 'Phạm', 'Hoàng', 'Đặng'];
+            const lastNames = ['An', 'Bình', 'Châu', 'Dương', 'Hải', 'Khang'];
+            const diags = ['Tăng huyết áp', 'Đái tháo đường', 'Rối loạn lipid máu', 'Viêm khớp'];
+            let today = new Date();
+
+            for(let i = 1; i <= num; i++) {
+                const pid = `P${i.toString().padStart(3, '0')}`;
+                const name = `${firstNames[Math.floor(Math.random()*firstNames.length)]} ${lastNames[Math.floor(Math.random()*lastNames.length)]}`;
+                
+                let lastVisitDate = new Date();
+                lastVisitDate.setDate(today.getDate() - Math.floor(Math.random() * 60));
+
+                DB.patients.push({
+                    id: pid, code: `BN${i.toString().padStart(4, '0')}`, name: name,
+                    gender: Math.random()>0.5?'Nam':'Nữ', dob: `19${Math.floor(Math.random()*40)+50}-01-15`,
+                    phone: `090${Math.floor(Math.random()*10000000)}`, blood_type: 'O+',
+                    diagnosis: diags[Math.floor(Math.random()*diags.length)],
+                    risk_level: Math.random() > 0.8 ? 'High' : (Math.random() > 0.5 ? 'Medium' : 'Low'),
+                    last_visit: lastVisitDate.toISOString().split('T')[0]
+                });
+
+                if(Math.random() > 0.3) {
+                    DB.visits.push({ id: `V${i}1`, patient_id: pid, date: lastVisitDate.toISOString().split('T')[0], complaint: 'Khám định kỳ', assessment: 'Ổn định', plan: 'Theo dõi' });
+                }
+
+                if(Math.random() > 0.6) {
+                    let aptDate = new Date();
+                    aptDate.setDate(today.getDate() + Math.floor(Math.random() * 10) - 2);
+                    DB.appointments.push({
+                        id: `A${i}1`, patient_id: pid, date: aptDate.toISOString().split('T')[0],
+                        purpose: 'Tái khám', status: aptDate >= today ? 'Scheduled' : 'Completed'
+                    });
+                }
+            }
+            saveDB();
+        }
+
+        const ui = {
+            showToast: function(message, type = 'success') {
+                const container = document.getElementById('toast-container');
+                const toast = document.createElement('div');
+                const colors = { success: 'bg-emerald-600', info: 'bg-blue-600', error: 'bg-rose-600' };
+                const icons = { success: 'fa-check-circle', info: 'fa-info-circle', error: 'fa-circle-exclamation' };
+                
+                toast.className = `${colors[type]} text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 fade-in transition-all duration-300`;
+                toast.innerHTML = `<i class="fa-solid ${icons[type]}"></i> <span class="font-medium text-sm">${message}</span>`;
+                
+                container.appendChild(toast);
+                setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 3000);
+            },
+            openModal: id => { document.getElementById(id).classList.remove('hidden'); document.getElementById(id).classList.add('flex'); },
+            closeModal: id => { document.getElementById(id).classList.add('hidden'); document.getElementById(id).classList.remove('flex'); }
+        };
+
+        const app = {
+            currentView: 'dashboard',
+            selectedPatient: null,
+            detailTab: 'overview',
+            apptTab: 'upcoming',
+            patientFilter: 'All', 
+            deleteTarget: { type: null, id: null },
+
+            getToday: () => new Date().toISOString().split('T')[0],
+
+            setDetailTab: function(tabName) {
+                this.detailTab = tabName;
+                renderPatientDetailTabs();
+            },
+
+            navigate: function(viewId, params = null) {
+                document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active', 'bg-e0f2fe', 'text-0369a1', 'border-r-4', 'border-0284c7'));
+                const navEl = document.getElementById(`nav-${viewId}`);
+                if(navEl) navEl.classList.add('active', 'bg-e0f2fe', 'text-0369a1', 'border-r-4', 'border-0284c7');
+
+                document.querySelectorAll('.view-section').forEach(el => { el.classList.remove('block'); el.classList.add('hidden'); });
+                const viewEl = document.getElementById(`view-${viewId}`);
+                if(viewEl) { viewEl.classList.remove('hidden'); viewEl.classList.add('block'); }
+
+                this.currentView = viewId;
+
+                if (viewId === 'dashboard') renderDashboard();
+                if (viewId === 'patients') {
+                    this.patientFilter = params?.filter || 'All';
+                    renderPatientsList();
+                }
+                if (viewId === 'appointments') renderAppointmentsList();
+                if (viewId === 'patient-detail' && params?.id) {
+                    this.selectedPatient = DB.patients.find(p => p.id === params.id);
+                    this.detailTab = params?.tab || 'overview';
+                    renderPatientDetail();
+                }
+            },
+
+            openAddPatient: function() {
+                document.getElementById('form-patient').reset();
+                document.getElementById('inp_p_id').value = '';
+                document.getElementById('modal-patient-title').innerHTML = '<i class="fa-solid fa-user-plus mr-2"></i>Thêm Bệnh Nhân Mới';
+                ui.openModal('modal-patient');
+            },
+            openEditPatient: function() {
+                const p = this.selectedPatient; if(!p) return;
+                document.getElementById('modal-patient-title').innerHTML = `<i class="fa-solid fa-user-pen mr-2"></i>Sửa Hồ Sơ: ${p.code}`;
+                document.getElementById('inp_p_id').value = p.id;
+                document.getElementById('inp_p_name').value = p.name;
+                document.getElementById('inp_p_gender').value = p.gender;
+                document.getElementById('inp_p_dob').value = p.dob;
+                document.getElementById('inp_p_phone').value = p.phone;
+                document.getElementById('inp_p_blood').value = p.blood_type;
+                document.getElementById('inp_p_diag').value = p.diagnosis;
+                document.getElementById('inp_p_risk').value = p.risk_level || 'Low';
+                ui.openModal('modal-patient');
+            },
+            savePatient: function() {
+                const id = document.getElementById('inp_p_id').value;
+                const name = document.getElementById('inp_p_name').value;
+                const dob = document.getElementById('inp_p_dob').value;
+                if(!name || !dob) { ui.showToast('Vui lòng nhập Tên và Ngày sinh', 'error'); return; }
+
+                const data = {
+                    name, gender: document.getElementById('inp_p_gender').value, dob,
+                    phone: document.getElementById('inp_p_phone').value, blood_type: document.getElementById('inp_p_blood').value,
+                    diagnosis: document.getElementById('inp_p_diag').value, risk_level: document.getElementById('inp_p_risk').value
+                };
+
+                if (id) {
+                    const idx = DB.patients.findIndex(p => p.id === id);
+                    if(idx > -1) { DB.patients[idx] = { ...DB.patients[idx], ...data }; this.selectedPatient = DB.patients[idx]; }
+                    ui.showToast('Đã cập nhật hồ sơ', 'success');
+                } else {
+                    const newId = `P${Date.now().toString().slice(-4)}`;
+                    const newCode = `BN${(DB.patients.length + 1).toString().padStart(4, '0')}`;
+                    DB.patients.unshift({ id: newId, code: newCode, last_visit: 'Chưa có', ...data });
+                    ui.showToast(`Đã thêm BN: ${newCode}`, 'success');
+                    this.navigate('patient-detail', {id: newId}); 
+                }
+                
+                saveDB(); // Lưu vào ổ cứng
+                ui.closeModal('modal-patient');
+                if (this.currentView === 'patients') renderPatientsList();
+                if (this.currentView === 'patient-detail' && id) renderPatientDetail();
+            },
+
+            openAddVisit: function(patientId = null) {
+                if(patientId) this.selectedPatient = DB.patients.find(p => p.id === patientId); 
+                if(!this.selectedPatient) return;
+                
+                document.getElementById('form-visit').reset();
+                document.getElementById('inp_v_id').value = '';
+                document.getElementById('inp_v_date').value = this.getToday();
+                document.getElementById('modal-visit-title').innerHTML = `<i class="fa-solid fa-plus-circle mr-2"></i>Thêm Lượt Khám (${this.selectedPatient.name})`;
+                ui.openModal('modal-visit');
+            },
+            openEditVisit: function(id) {
+                const v = DB.visits.find(x => x.id === id); if(!v) return;
+                document.getElementById('inp_v_id').value = v.id;
+                document.getElementById('inp_v_date').value = v.date;
+                document.getElementById('inp_v_complaint').value = v.complaint;
+                document.getElementById('inp_v_assessment').value = v.assessment;
+                document.getElementById('inp_v_plan').value = v.plan;
+                document.getElementById('modal-visit-title').innerHTML = '<i class="fa-solid fa-pen mr-2"></i>Sửa Thông Tin Lượt Khám';
+                ui.openModal('modal-visit');
+            },
+            saveVisit: function() {
+                const id = document.getElementById('inp_v_id').value;
+                const date = document.getElementById('inp_v_date').value;
+                const complaint = document.getElementById('inp_v_complaint').value;
+                if(!complaint) { ui.showToast('Bắt buộc nhập Lý do khám', 'error'); return; }
+
+                const data = {
+                    date, complaint, assessment: document.getElementById('inp_v_assessment').value, plan: document.getElementById('inp_v_plan').value
+                };
+
+                if (id) { 
+                    const idx = DB.visits.findIndex(v => v.id === id);
+                    if(idx > -1) DB.visits[idx] = { ...DB.visits[idx], ...data };
+                    ui.showToast('Đã lưu thay đổi lượt khám', 'success');
+                } else { 
+                    DB.visits.unshift({ id: `V${Date.now()}`, patient_id: this.selectedPatient.id, ...data });
+                    const pIdx = DB.patients.findIndex(p => p.id === this.selectedPatient.id);
+                    if(pIdx > -1) DB.patients[pIdx].last_visit = date; 
+                    ui.showToast('Đã tạo lượt khám mới', 'success');
+                }
+                
+                saveDB(); // Lưu vào ổ cứng
+                ui.closeModal('modal-visit');
+                
+                if(this.currentView !== 'patient-detail') this.navigate('patient-detail', {id: this.selectedPatient.id, tab: 'visits'});
+                else { this.detailTab = 'visits'; renderPatientDetailTabs(); }
+            },
+
+            openAddAppointment: function(patientId = null) {
+                document.getElementById('form-appointment').reset();
+                document.getElementById('inp_a_id').value = '';
+                document.getElementById('inp_a_date').value = this.getToday();
+                document.getElementById('modal-appointment-title').innerHTML = '<i class="fa-solid fa-calendar-plus mr-2"></i>Tạo Lịch Hẹn Mới';
+                
+                const select = document.getElementById('inp_a_patient');
+                select.innerHTML = DB.patients.map(p => `<option value="${p.id}">${p.code} - ${p.name}</option>`).join('');
+                select.disabled = false;
+
+                if (patientId) select.value = patientId;
+                else if (this.selectedPatient && this.currentView === 'patient-detail') select.value = this.selectedPatient.id;
+                
+                ui.openModal('modal-appointment');
+            },
+            openEditAppointment: function(id) {
+                const a = DB.appointments.find(x => x.id === id); if(!a) return;
+                document.getElementById('inp_a_id').value = a.id;
+                document.getElementById('inp_a_date').value = a.date;
+                document.getElementById('inp_a_purpose').value = a.purpose;
+                document.getElementById('modal-appointment-title').innerHTML = '<i class="fa-solid fa-pen mr-2"></i>Sửa Lịch Hẹn';
+                
+                const select = document.getElementById('inp_a_patient');
+                select.innerHTML = DB.patients.map(p => `<option value="${p.id}" ${p.id === a.patient_id ? 'selected' : ''}>${p.code} - ${p.name}</option>`).join('');
+                select.disabled = true; 
+
+                ui.openModal('modal-appointment');
+            },
+            saveAppointment: function() {
+                const id = document.getElementById('inp_a_id').value;
+                const pid = document.getElementById('inp_a_patient').value;
+                const date = document.getElementById('inp_a_date').value;
+                const purpose = document.getElementById('inp_a_purpose').value;
+                if(!pid || !date || !purpose) { ui.showToast('Vui lòng điền đủ thông tin bắt buộc', 'error'); return; }
+
+                if (id) {
+                    const idx = DB.appointments.findIndex(a => a.id === id);
+                    if(idx > -1) { DB.appointments[idx].date = date; DB.appointments[idx].purpose = purpose; }
+                    ui.showToast('Cập nhật lịch hẹn thành công', 'success');
+                } else {
+                    DB.appointments.push({ id: `A${Date.now()}`, patient_id: pid, date, purpose, status: 'Scheduled' });
+                    ui.showToast('Đã tạo lịch hẹn mới', 'success');
+                }
+
+                saveDB(); // Lưu vào ổ cứng
+                ui.closeModal('modal-appointment');
+                if (this.currentView === 'appointments') renderAppointmentsList();
+                if (this.currentView === 'dashboard') renderDashboard();
+                if (this.currentView === 'patient-detail') { this.detailTab = 'appointments'; renderPatientDetailTabs(); }
+            },
+            markApptStatus: function(id, status) {
+                const idx = DB.appointments.findIndex(a => a.id === id);
+                if(idx > -1) {
+                    DB.appointments[idx].status = status;
+                    saveDB(); // Lưu vào ổ cứng
+                    ui.showToast(status === 'Completed' ? 'Đã hoàn tất lịch hẹn' : 'Đã khôi phục lịch hẹn', 'info');
+                    if (this.currentView === 'appointments') renderAppointmentsList();
+                    if (this.currentView === 'dashboard') renderDashboard();
+                    if (this.currentView === 'patient-detail') renderPatientDetailTabs();
+                }
+            },
+
+            requestDelete: function(type, id) {
+                this.deleteTarget = { type, id };
+                ui.openModal('modal-confirm');
+            },
+            confirmDelete: function() {
+                const { type, id } = this.deleteTarget;
+                if(type === 'visit') {
+                    DB.visits = DB.visits.filter(v => v.id !== id);
+                    if(this.currentView === 'patient-detail') renderPatientDetailTabs();
+                } else if (type === 'appointment') {
+                    DB.appointments = DB.appointments.filter(a => a.id !== id);
+                    if(this.currentView === 'appointments') renderAppointmentsList();
+                    if(this.currentView === 'dashboard') renderDashboard();
+                    if(this.currentView === 'patient-detail') renderPatientDetailTabs();
+                }
+                saveDB(); // Lưu vào ổ cứng
+                ui.closeModal('modal-confirm');
+                ui.showToast('Đã xóa dữ liệu', 'success');
+            }
+        };
+
+        function renderDashboard() {
+            const container = document.getElementById('view-dashboard');
+            const totalPatients = DB.patients.length;
+            const highRisk = DB.patients.filter(p => p.risk_level === 'High').length;
+            const today = app.getToday();
+            
+            const upcomingAppts = DB.appointments
+                .filter(a => a.date >= today && a.status === 'Scheduled')
+                .sort((a,b) => new Date(a.date) - new Date(b.date));
+
+            container.innerHTML = `
+                <div class="mb-8">
+                    <h1 class="text-2xl font-bold text-slate-800">Tổng Quan Bảng Điều Khiển</h1>
+                    <p class="text-slate-500 mt-1">Thông tin được tổng hợp theo thời gian thực.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-primary transition-all" onclick="app.navigate('patients', {filter: 'All'})">
+                        <div><p class="text-sm font-medium text-slate-500 mb-1">Tổng Số Hồ Sơ</p><h3 class="text-3xl font-bold text-slate-800">${totalPatients}</h3></div>
+                        <div class="w-12 h-12 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-xl"><i class="fa-solid fa-users-medical"></i></div>
+                    </div>
+                    
+                    <div class="bg-white p-6 rounded-xl border border-rose-200 shadow-sm flex items-center justify-between relative overflow-hidden cursor-pointer hover:shadow-md hover:border-rose-400 transition-all group" onclick="app.navigate('patients', {filter: 'HighRisk'})">
+                        <div class="absolute top-0 left-0 w-1 h-full bg-rose-500 group-hover:w-2 transition-all"></div>
+                        <div><p class="text-sm font-medium text-slate-500 mb-1">Bệnh Nhân Nguy Cơ Cao</p><h3 class="text-3xl font-bold text-rose-600">${highRisk}</h3></div>
+                        <div class="w-12 h-12 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center text-xl group-hover:scale-110 transition-transform"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                    </div>
+
+                    <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between cursor-pointer hover:shadow-md hover:border-emerald-400 transition-all" onclick="app.navigate('appointments')">
+                        <div><p class="text-sm font-medium text-slate-500 mb-1">Lịch Hẹn Cần Xử Lý</p><h3 class="text-3xl font-bold text-slate-800">${upcomingAppts.length}</h3></div>
+                        <div class="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center text-xl"><i class="fa-regular fa-calendar-check"></i></div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col h-[400px]">
+                        <div class="flex justify-between items-center mb-4 border-b border-slate-100 pb-2">
+                            <h3 class="font-bold text-slate-800"><i class="fa-regular fa-clock text-primary mr-2"></i> Lịch Hẹn Gần Nhất</h3>
+                            <button onclick="app.openAddAppointment()" class="text-sm text-primary hover:bg-teal-50 px-2 py-1 rounded transition-colors">+ Tạo lịch</button>
+                        </div>
+                        <div class="overflow-y-auto flex-1 pr-2 space-y-3">
+                            ${upcomingAppts.slice(0,5).map(apt => {
+                                const p = DB.patients.find(x => x.id === apt.patient_id);
+                                const isToday = apt.date === today;
+                                return `
+                                <div class="flex items-center justify-between p-3 border border-slate-100 rounded-lg hover:bg-slate-50 transition-colors group">
+                                    <div class="flex items-center gap-3 cursor-pointer flex-1" onclick="app.navigate('patient-detail', {id: '${p.id}'})">
+                                        <div class="w-10 h-10 rounded-full ${isToday ? 'bg-rose-100 text-rose-700' : 'bg-blue-50 text-blue-600'} flex items-center justify-center font-bold text-sm shrink-0">
+                                            ${p.name.charAt(0)}
+                                        </div>
+                                        <div>
+                                            <p class="font-semibold text-sm text-slate-800 group-hover:text-primary transition-colors">${p.name} <span class="text-xs text-slate-500 font-normal">(${p.code})</span></p>
+                                            <p class="text-xs text-slate-500 mt-0.5">${apt.purpose} • <span class="${isToday ? 'text-rose-600 font-medium' : ''}">${isToday ? 'Hôm nay' : apt.date}</span></p>
+                                        </div>
+                                    </div>
+                                    <button onclick="app.markApptStatus('${apt.id}', 'Completed')" class="w-8 h-8 rounded-full text-slate-300 hover:text-emerald-500 hover:bg-emerald-50 transition-colors shrink-0" title="Đánh dấu hoàn tất">
+                                        <i class="fa-solid fa-check"></i>
+                                    </button>
+                                </div>
+                                `;
+                            }).join('')}
+                            ${upcomingAppts.length === 0 ? '<div class="text-center py-8 text-slate-400 text-sm italic">Không có lịch hẹn sắp tới.</div>' : ''}
+                        </div>
+                        ${upcomingAppts.length > 5 ? `<button onclick="app.navigate('appointments')" class="w-full text-center text-sm text-primary py-2 mt-2 hover:bg-slate-50 rounded">Xem tất cả ${upcomingAppts.length} lịch hẹn</button>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderPatientsList() {
+            const container = document.getElementById('view-patients');
+            let list = DB.patients;
+            let filterUI = '';
+
+            if(app.patientFilter === 'HighRisk') {
+                list = list.filter(p => p.risk_level === 'High');
+                filterUI = `
+                    <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-rose-100 text-rose-800 mr-3">
+                        <i class="fa-solid fa-filter mr-2 text-rose-500"></i> Lọc: Nguy Cơ Cao
+                        <button onclick="app.navigate('patients', {filter: 'All'})" class="ml-2 hover:text-rose-500 focus:outline-none"><i class="fa-solid fa-xmark"></i></button>
+                    </span>`;
+            }
+
+            container.innerHTML = `
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                    <div class="flex items-center">
+                        <h1 class="text-2xl font-bold text-slate-800 mr-4">Danh Sách Bệnh Nhân</h1>
+                        ${filterUI}
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <div class="relative">
+                            <i class="fa-solid fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400"></i>
+                            <input type="text" id="search-input" onkeyup="filterTable('patient-table-body')" placeholder="Tìm tên, mã BN..." class="pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary w-full md:w-64 shadow-sm">
+                        </div>
+                        <button onclick="app.openAddPatient()" class="bg-primary hover:bg-secondary text-white px-4 py-2 rounded-lg text-sm font-medium shadow-sm transition-colors shrink-0">
+                            <i class="fa-solid fa-plus mr-2"></i>Thêm Mới
+                        </button>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden h-[calc(100vh-200px)] flex flex-col">
+                    <div class="overflow-y-auto flex-1">
+                        <table class="w-full text-left text-sm relative">
+                            <thead class="bg-slate-50 border-b border-slate-200 text-slate-600 font-medium sticky top-0 z-10 shadow-sm">
+                                <tr>
+                                    <th class="px-6 py-4">Mã BN</th><th class="px-6 py-4">Họ và Tên</th><th class="px-6 py-4">Giới tính / Tuổi</th>
+                                    <th class="px-6 py-4">Chẩn đoán chính</th><th class="px-6 py-4 text-center">Rủi ro</th><th class="px-6 py-4 text-right">Thao tác</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100" id="patient-table-body">
+                                ${list.map(p => `
+                                    <tr class="hover:bg-slate-50 transition-colors hover-reveal-container">
+                                        <td class="px-6 py-4 font-mono text-slate-500 cursor-pointer" onclick="app.navigate('patient-detail', {id: '${p.id}'})">${p.code}</td>
+                                        <td class="px-6 py-4 font-semibold text-slate-800 cursor-pointer" onclick="app.navigate('patient-detail', {id: '${p.id}'})">${p.name}</td>
+                                        <td class="px-6 py-4 text-slate-600 cursor-pointer" onclick="app.navigate('patient-detail', {id: '${p.id}'})">
+                                            ${p.gender} • ${new Date().getFullYear() - parseInt(p.dob.split('-')[0])}t<br>
+                                            <span class="text-xs text-slate-400"><i class="fa-solid fa-phone mr-1"></i>${p.phone}</span>
+                                        </td>
+                                        <td class="px-6 py-4 text-slate-600 max-w-xs truncate" title="${p.diagnosis}">${p.diagnosis}</td>
+                                        <td class="px-6 py-4 text-center">
+                                            <span class="px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider ${p.risk_level === 'High' ? 'bg-rose-100 text-rose-700' : p.risk_level === 'Medium' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}">${p.risk_level}</span>
+                                        </td>
+                                        <td class="px-6 py-4 text-right">
+                                            <div class="action-group flex justify-end gap-2">
+                                                <button onclick="app.openAddAppointment('${p.id}')" class="w-8 h-8 rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors" title="Đặt lịch hẹn"><i class="fa-regular fa-calendar-plus"></i></button>
+                                                <button onclick="app.openAddVisit('${p.id}')" class="w-8 h-8 rounded-full bg-teal-50 text-teal-600 hover:bg-teal-100 transition-colors" title="Thêm lượt khám"><i class="fa-solid fa-stethoscope"></i></button>
+                                                <button onclick="app.navigate('patient-detail', {id: '${p.id}'})" class="w-8 h-8 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors" title="Xem chi tiết"><i class="fa-solid fa-chevron-right"></i></button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                                ${list.length === 0 ? '<tr><td colspan="6" class="text-center py-8 text-slate-500">Không tìm thấy dữ liệu phù hợp.</td></tr>' : ''}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        }
+
+        function filterTable(tbodyId) {
+            const query = document.getElementById('search-input').value.toLowerCase();
+            const rows = document.getElementById(tbodyId).getElementsByTagName('tr');
+            for(let row of rows) {
+                if(row.innerText.toLowerCase().includes(query)) row.style.display = 'table-row';
+                else row.style.display = 'none';
+            }
+        }
+
+        function renderAppointmentsList() {
+            const container = document.getElementById('view-appointments');
+            const isUpcomingTab = app.apptTab === 'upcoming';
+            const today = app.getToday();
+            
+            let displayList = DB.appointments.filter(a => isUpcomingTab ? a.status === 'Scheduled' : a.status === 'Completed');
+            displayList.sort((a,b) => isUpcomingTab ? new Date(a.date) - new Date(b.date) : new Date(b.date) - new Date(a.date));
+
+            container.innerHTML = `
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                    <h1 class="text-2xl font-bold text-slate-800">Quản Lý Lịch Hẹn</h1>
+                    <button onclick="app.openAddAppointment()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium shadow-sm transition-colors">
+                        <i class="fa-regular fa-calendar-plus mr-2"></i>Tạo Lịch Hẹn
+                    </button>
+                </div>
+
+                <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[calc(100vh-170px)]">
+                    <div class="flex border-b border-slate-200 px-4 bg-slate-50">
+                        <button onclick="app.apptTab='upcoming'; renderAppointmentsList()" class="px-4 py-3 text-sm font-medium border-b-2 ${isUpcomingTab ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'} transition-colors">
+                            Cần xử lý (${DB.appointments.filter(a=>a.status==='Scheduled').length})
+                        </button>
+                        <button onclick="app.apptTab='completed'; renderAppointmentsList()" class="px-4 py-3 text-sm font-medium border-b-2 ${!isUpcomingTab ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'} transition-colors">
+                            Đã hoàn tất
+                        </button>
+                    </div>
+
+                    <div class="overflow-y-auto flex-1 p-4 bg-slate-50/50">
+                        <div class="space-y-3">
+                            ${displayList.map(apt => {
+                                const p = DB.patients.find(x => x.id === apt.patient_id);
+                                const isDone = apt.status === 'Completed';
+                                const isPastDue = !isDone && apt.date < today;
+
+                                return `
+                                <div class="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-white border ${isPastDue ? 'border-rose-200 shadow-sm' : 'border-slate-200 shadow-sm'} rounded-xl hover-reveal-container transition-all">
+                                    <div class="flex items-start gap-4 flex-1">
+                                        <div class="w-12 h-12 rounded-lg ${isDone ? 'bg-slate-100 text-slate-400' : (isPastDue ? 'bg-rose-50 text-rose-600' : 'bg-blue-50 text-blue-600')} flex flex-col items-center justify-center font-bold shrink-0">
+                                            <span class="text-[10px] uppercase font-semibold leading-none mb-1">Th ${apt.date.split('-')[1]}</span>
+                                            <span class="text-lg leading-none">${apt.date.split('-')[2]}</span>
+                                        </div>
+                                        <div>
+                                            <div class="flex items-center gap-2">
+                                                <h4 class="font-bold text-slate-800 cursor-pointer hover:text-primary transition-colors" onclick="app.navigate('patient-detail', {id: '${p.id}'})">${p.name}</h4>
+                                                ${isPastDue ? '<span class="px-2 py-0.5 bg-rose-100 text-rose-700 text-[10px] font-bold rounded-full">Quá hạn</span>' : ''}
+                                            </div>
+                                            <p class="text-sm text-slate-600 mt-1"><i class="fa-solid fa-notes-medical text-slate-400 mr-1.5 w-4 text-center"></i> ${apt.purpose}</p>
+                                            <p class="text-xs text-slate-500 mt-0.5"><i class="fa-solid fa-phone text-slate-400 mr-1.5 w-4 text-center"></i> ${p.phone}</p>
+                                        </div>
+                                    </div>
+                                    <div class="mt-4 sm:mt-0 flex items-center gap-4 shrink-0 border-t sm:border-t-0 pt-3 sm:pt-0 border-slate-100 w-full sm:w-auto justify-between sm:justify-end">
+                                        <div class="action-group flex gap-1 sm:mr-4">
+                                            <button onclick="app.openEditAppointment('${apt.id}')" class="w-8 h-8 rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors" title="Sửa"><i class="fa-solid fa-pen"></i></button>
+                                            <button onclick="app.requestDelete('appointment', '${apt.id}')" class="w-8 h-8 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors" title="Xóa"><i class="fa-solid fa-trash"></i></button>
+                                        </div>
+                                        ${!isDone 
+                                            ? `<button onclick="app.markApptStatus('${apt.id}', 'Completed')" class="px-3 py-1.5 bg-emerald-50 text-emerald-700 text-xs font-bold rounded-md hover:bg-emerald-100 transition-colors border border-emerald-200"><i class="fa-solid fa-check mr-1"></i> Hoàn tất</button>` 
+                                            : `<button onclick="app.markApptStatus('${apt.id}', 'Scheduled')" class="px-3 py-1.5 bg-slate-100 text-slate-600 text-xs font-medium rounded-md hover:bg-slate-200 transition-colors"><i class="fa-solid fa-rotate-left mr-1"></i> Hoàn tác</button>`
+                                        }
+                                    </div>
+                                </div>
+                                `;
+                            }).join('')}
+                            ${displayList.length === 0 ? `<div class="text-center py-12 text-slate-400"><i class="fa-regular fa-calendar-xmark text-4xl mb-3 block"></i>Không có dữ liệu trong mục này.</div>` : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderPatientDetail() {
+            const container = document.getElementById('view-patient-detail');
+            const p = app.selectedPatient; if(!p) return;
+            const age = new Date().getFullYear() - parseInt(p.dob.split('-')[0]);
+
+            container.innerHTML = `
+                <div class="bg-white border-b border-slate-200 px-6 py-6 sticky top-0 z-10 shadow-sm">
+                    <button onclick="app.navigate('patients')" class="text-slate-500 hover:text-primary mb-4 text-sm font-medium flex items-center transition-colors">
+                        <i class="fa-solid fa-arrow-left mr-2"></i> Quay lại
+                    </button>
+                    
+                    <div class="flex flex-col md:flex-row justify-between gap-4">
+                        <div class="flex items-start gap-4">
+                            <div class="w-16 h-16 rounded-full bg-gradient-to-br from-teal-400 to-primary text-white flex items-center justify-center text-2xl font-bold shadow-md shrink-0">${p.name.charAt(0)}</div>
+                            <div>
+                                <div class="flex items-center gap-3 mb-1">
+                                    <h1 class="text-2xl font-bold text-slate-800">${p.name}</h1>
+                                    <span class="px-2 py-0.5 rounded text-xs font-mono bg-slate-100 text-slate-600 border border-slate-200">${p.code}</span>
+                                    ${p.risk_level === 'High' ? `<span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-700 border border-rose-200 shadow-sm"><i class="fa-solid fa-circle-exclamation mr-1"></i>Nguy Cơ Cao</span>` : ''}
+                                </div>
+                                <div class="text-sm text-slate-600 flex flex-wrap gap-x-4 gap-y-2 mt-2">
+                                    <span class="flex items-center gap-1.5"><i class="fa-solid fa-venus-mars text-slate-400"></i> ${p.gender}</span>
+                                    <span class="flex items-center gap-1.5"><i class="fa-solid fa-cake-candles text-slate-400"></i> ${p.dob} (${age} tuổi)</span>
+                                    <span class="flex items-center gap-1.5"><i class="fa-solid fa-phone text-slate-400"></i> ${p.phone}</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="flex gap-2 shrink-0 items-start">
+                            <button onclick="app.openEditPatient()" class="px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-700 text-sm font-medium hover:bg-slate-50 transition-colors shadow-sm">
+                                <i class="fa-solid fa-pen mr-2 text-slate-400"></i>Sửa Thông Tin
+                            </button>
+                            <button onclick="app.openAddVisit()" class="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-secondary transition-colors shadow-sm">
+                                <i class="fa-solid fa-stethoscope mr-2"></i>Tạo Lượt Khám
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="flex border-b border-slate-200 mt-8 gap-6 -mb-6 overflow-x-auto hide-scrollbar">
+                        <button onclick="app.setDetailTab('overview')" class="tab-btn px-1 py-3 text-sm text-slate-500 hover:text-slate-800 transition-colors whitespace-nowrap ${app.detailTab === 'overview' ? 'active' : ''}">Tổng Quan</button>
+                        <button onclick="app.setDetailTab('visits')" class="tab-btn px-1 py-3 text-sm text-slate-500 hover:text-slate-800 transition-colors whitespace-nowrap ${app.detailTab === 'visits' ? 'active' : ''}">
+                            Lượt Khám <span class="ml-1 bg-slate-100 text-slate-600 py-0.5 px-2 rounded-full text-[10px] font-bold">${DB.visits.filter(v=>v.patient_id === p.id).length}</span>
+                        </button>
+                        <button onclick="app.setDetailTab('appointments')" class="tab-btn px-1 py-3 text-sm text-slate-500 hover:text-slate-800 transition-colors whitespace-nowrap ${app.detailTab === 'appointments' ? 'active' : ''}">
+                            Lịch Hẹn <span class="ml-1 bg-slate-100 text-slate-600 py-0.5 px-2 rounded-full text-[10px] font-bold">${DB.appointments.filter(a=>a.patient_id === p.id).length}</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div id="detail-tab-content" class="p-4 md:p-8"></div>
+            `;
+            renderPatientDetailTabs();
+        }
+
+        function renderPatientDetailTabs() {
+            const container = document.getElementById('detail-tab-content');
+            const p = app.selectedPatient;
+            
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active', 'border-b-2', 'border-primary', 'text-primary', 'font-semibold'));
+            const activeBtnIndex = ['overview', 'visits', 'appointments'].indexOf(app.detailTab);
+            if(activeBtnIndex >= 0) document.querySelectorAll('.tab-btn')[activeBtnIndex].classList.add('active', 'border-b-2', 'border-primary', 'text-primary', 'font-semibold');
+
+            const pVisits = DB.visits.filter(v => v.patient_id === p.id).sort((a,b) => new Date(b.date) - new Date(a.date));
+            const pApts = DB.appointments.filter(a => a.patient_id === p.id).sort((a,b) => new Date(b.date) - new Date(a.date));
+
+            let html = '';
+
+            if (app.detailTab === 'overview') {
+                const latestVisit = pVisits[0];
+                html = `
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 fade-in">
+                        <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                            <h3 class="font-bold text-slate-800 mb-4 text-sm uppercase tracking-wider flex items-center"><i class="fa-solid fa-notes-medical text-primary mr-2"></i> Chẩn Đoán Nền</h3>
+                            <div class="bg-amber-50 border border-amber-100 p-4 rounded-lg">
+                                <p class="text-slate-800 font-medium">${p.diagnosis || 'Chưa ghi nhận chẩn đoán'}</p>
+                            </div>
+                        </div>
+                        <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                            <div class="flex justify-between items-center mb-4">
+                                <h3 class="font-bold text-slate-800 text-sm uppercase tracking-wider flex items-center"><i class="fa-solid fa-clock-rotate-left text-primary mr-2"></i> Lần Khám Gần Nhất</h3>
+                            </div>
+                            ${latestVisit ? `
+                                <div class="space-y-3">
+                                    <p class="text-sm border-b border-slate-100 pb-2"><strong class="text-slate-500 mr-2 w-20 inline-block">Ngày:</strong> <span class="font-medium">${latestVisit.date}</span></p>
+                                    <p class="text-sm border-b border-slate-100 pb-2"><strong class="text-slate-500 mr-2 w-20 inline-block">Lý do:</strong> ${latestVisit.complaint}</p>
+                                    <p class="text-sm"><strong class="text-slate-500 mr-2 w-20 inline-block">Đánh giá:</strong> ${latestVisit.assessment || '-'}</p>
+                                </div>
+                                <button onclick="app.setDetailTab('visits')" class="w-full mt-4 text-center text-sm text-primary py-2 hover:bg-slate-50 rounded font-medium transition-colors">Xem lịch sử chi tiết &rarr;</button>
+                            ` : '<p class="text-sm text-slate-500 italic text-center py-4">Chưa có dữ liệu lượt khám.</p>'}
+                        </div>
+                    </div>
+                `;
+            } 
+            else if (app.detailTab === 'visits') {
+                html = `
+                    <div class="fade-in max-w-4xl mx-auto">
+                        <div class="flex justify-between items-center mb-6">
+                            <h2 class="text-xl font-bold text-slate-800">Lịch Sử Khám Bệnh</h2>
+                        </div>
+                        <div class="space-y-6 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-slate-200 before:to-transparent">
+                            ${pVisits.map((v, index) => `
+                                <div class="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group hover-reveal-container">
+                                    <div class="flex items-center justify-center w-10 h-10 rounded-full border-4 border-slate-50 bg-white ${index===0 ? 'text-primary border-teal-100' : 'text-slate-400'} shadow shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 z-10">
+                                        <i class="fa-solid fa-stethoscope text-sm"></i>
+                                    </div>
+                                    <div class="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] bg-white p-5 rounded-xl border ${index===0 ? 'border-primary/30 shadow-md' : 'border-slate-200 shadow-sm'} hover:shadow-md transition-shadow">
+                                        <div class="flex justify-between items-start mb-3 border-b border-slate-100 pb-2">
+                                            <p class="font-bold ${index===0 ? 'text-primary' : 'text-slate-700'}">${v.date}</p>
+                                            <div class="action-group flex gap-1 -mt-1 -mr-2 bg-white rounded-lg shadow-sm border border-slate-100 px-1 py-0.5">
+                                                <button onclick="app.openEditVisit('${v.id}')" class="w-7 h-7 rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50" title="Sửa"><i class="fa-solid fa-pen text-xs"></i></button>
+                                                <button onclick="app.requestDelete('visit', '${v.id}')" class="w-7 h-7 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50" title="Xóa"><i class="fa-solid fa-trash text-xs"></i></button>
+                                            </div>
+                                        </div>
+                                        <div class="space-y-2">
+                                            <div><p class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Lý do khám</p><p class="text-sm text-slate-800">${v.complaint}</p></div>
+                                            ${v.assessment ? `<div><p class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Đánh giá</p><p class="text-sm text-slate-800">${v.assessment}</p></div>` : ''}
+                                            ${v.plan ? `<div class="bg-slate-50 p-2 rounded border border-slate-100 mt-2"><p class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Kế hoạch</p><p class="text-sm text-slate-800 font-medium">${v.plan}</p></div>` : ''}
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                            ${pVisits.length === 0 ? '<div class="text-center py-10 text-slate-500 relative z-10 bg-slate-50 border border-slate-200 rounded-xl border-dashed">Bệnh nhân chưa có lịch sử khám bệnh.</div>' : ''}
+                        </div>
+                    </div>
+                `;
+            }
+            else if (app.detailTab === 'appointments') {
+                html = `
+                    <div class="fade-in max-w-4xl mx-auto">
+                        <div class="flex justify-between items-center mb-6">
+                            <h2 class="text-xl font-bold text-slate-800">Lịch Hẹn Của Bệnh Nhân</h2>
+                            <button onclick="app.openAddAppointment('${p.id}')" class="text-sm bg-blue-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-blue-700 transition-colors"><i class="fa-regular fa-calendar-plus mr-2"></i>Tạo Lịch Hẹn</button>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            ${pApts.map(apt => {
+                                const isDone = apt.status === 'Completed';
+                                return `
+                                <div class="bg-white p-5 rounded-xl border ${isDone ? 'border-slate-200 bg-slate-50/50' : 'border-blue-200 shadow-sm'} flex flex-col hover-reveal-container transition-all">
+                                    <div class="flex justify-between items-start mb-2">
+                                        <div class="flex items-center gap-2">
+                                            <i class="fa-regular fa-calendar ${isDone ? 'text-slate-400' : 'text-blue-500'}"></i>
+                                            <p class="font-bold text-slate-800">${apt.date}</p>
+                                        </div>
+                                        <span class="px-2 py-0.5 ${isDone ? 'bg-slate-200 text-slate-600' : 'bg-amber-100 text-amber-700'} text-[10px] font-bold rounded-full uppercase tracking-wider">${apt.status}</span>
+                                    </div>
+                                    <p class="text-sm text-slate-600 mb-4 flex-1">${apt.purpose}</p>
+                                    
+                                    <div class="flex justify-between items-center border-t border-slate-100 pt-3 mt-auto">
+                                        <div class="action-group flex gap-1">
+                                            <button onclick="app.openEditAppointment('${apt.id}')" class="w-8 h-8 rounded-full text-slate-400 hover:text-blue-600 hover:bg-blue-50" title="Sửa"><i class="fa-solid fa-pen text-sm"></i></button>
+                                            <button onclick="app.requestDelete('appointment', '${apt.id}')" class="w-8 h-8 rounded-full text-slate-400 hover:text-rose-600 hover:bg-rose-50" title="Xóa"><i class="fa-solid fa-trash text-sm"></i></button>
+                                        </div>
+                                        
+                                        ${!isDone 
+                                            ? `<button onclick="app.markApptStatus('${apt.id}', 'Completed')" class="text-xs font-semibold text-emerald-600 hover:text-emerald-700 bg-emerald-50 px-2 py-1 rounded">Đánh dấu hoàn tất</button>`
+                                            : `<button onclick="app.markApptStatus('${apt.id}', 'Scheduled')" class="text-xs font-medium text-slate-500 hover:text-slate-700">Hoàn tác</button>`
+                                        }
+                                    </div>
+                                </div>
+                                `
+                            }).join('')}
+                            ${pApts.length === 0 ? '<div class="col-span-full text-center py-12 text-slate-400 bg-white rounded-xl border border-dashed border-slate-200">Chưa có lịch hẹn nào được ghi nhận.</div>' : ''}
+                        </div>
+                    </div>
+                `;
+            }
+            container.innerHTML = html;
+        }
+
+        window.onload = () => {
+            // Chỉ tạo dữ liệu mẫu nếu Database trống (mới mở lần đầu)
+            if (DB.patients.length === 0) {
+                seedDatabase(40); 
+            }
+            app.navigate('dashboard');
+        };
+    </script>
+</body>
+</html>
