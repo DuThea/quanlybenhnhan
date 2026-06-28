@@ -219,17 +219,21 @@
       DEVICE_ID: 'medicare-pro-device-id-v1'
     };
 
-    const CloudConfig = {
-      firebase: {
-        apiKey: "AIzaSyDAh_SL1pq4gmMKy8zFUn2f6nkHzlkwDkA",
-        authDomain: "medicarepro-8588c.firebaseapp.com",
-        projectId: "medicarepro-8588c",
-        storageBucket: "medicarepro-8588c.firebasestorage.app",
-        messagingSenderId: "541330848431",
-        appId: "1:541330848431:web:850f7cfd8a631e4cccb25a",
-      },
-      clinicId: "G-HQ3B5PZ2XJ"
-    };
+    const CloudConfig = (() => {
+      const runtimeConfig = window.__MEDICARE_CLOUD_CONFIG__ || {};
+      const runtimeFirebase = runtimeConfig.firebase || {};
+      return {
+        firebase: {
+          apiKey: runtimeFirebase.apiKey || 'AIzaSyDAh_SL1pq4gmMKy8zFUn2f6nkHzlkwDkA',
+          authDomain: runtimeFirebase.authDomain || 'medicarepro-8588c.firebaseapp.com',
+          projectId: runtimeFirebase.projectId || 'medicarepro-8588c',
+          storageBucket: runtimeFirebase.storageBucket || 'medicarepro-8588c.firebasestorage.app',
+          messagingSenderId: runtimeFirebase.messagingSenderId || '541330848431',
+          appId: runtimeFirebase.appId || '1:541330848431:web:850f7cfd8a631e4cccb25a'
+        },
+        clinicId: runtimeConfig.clinicId || 'G-HQ3B5PZ2XJ'
+      };
+    })();
 
     const CloudCollections = ['patients', 'visits', 'medications', 'appointments', 'invoices', 'logs'];
 
@@ -614,6 +618,11 @@
               this.persistCache();
               return this.state;
             }
+            if (this.state) {
+              await FirebaseSync.saveState(this.state);
+              this.persistCache();
+              return this.state;
+            }
           } catch (error) {
             console.error('Firebase load error:', error);
           }
@@ -621,7 +630,7 @@
         if (!this.state) {
           this.state = Seed.create();
           this.persistCache();
-          if (this.cloudEnabled) FirebaseSync.queueSave(this.state);
+          if (this.cloudEnabled) await FirebaseSync.saveState(this.state);
         }
         return this.state;
       },
