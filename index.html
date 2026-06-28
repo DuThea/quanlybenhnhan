@@ -58,6 +58,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <style>
     body { font-family: Inter, sans-serif; }
     .glass { backdrop-filter: blur(18px); background: rgba(255, 255, 255, 0.84); }
@@ -177,6 +179,8 @@
 
         <section id="dashboardView" class="view-panel space-y-6 animate-fadeIn"></section>
         <section id="patientsView" class="view-panel hidden space-y-6 animate-fadeIn"></section>
+        <section id="patientProfileView" class="view-panel hidden space-y-6 animate-fadeIn"></section>
+        <section id="metricFocusView" class="view-panel hidden space-y-6 animate-fadeIn"></section>
         <section id="appointmentsView" class="view-panel hidden space-y-6 animate-fadeIn"></section>
         <section id="invoicesView" class="view-panel hidden space-y-6 animate-fadeIn"></section>
         <section id="activityView" class="view-panel hidden space-y-6 animate-fadeIn"></section>
@@ -210,9 +214,24 @@
     // Tiện ích và hằng số chung
     // =========================
     const StorageKeys = {
-      DATA: 'medicare-pro-db-v1',
-      SETTINGS: 'medicare-pro-settings-v1'
+      DATA: 'medicare-pro-db-cache-v2',
+      SETTINGS: 'medicare-pro-settings-v1',
+      DEVICE_ID: 'medicare-pro-device-id-v1'
     };
+
+    const CloudConfig = {
+      firebase: {
+        apiKey: "AIzaSyDAh_SL1pq4gmMKy8zFUn2f6nkHzlkwDkA",
+        authDomain: "medicarepro-8588c.firebaseapp.com",
+        projectId: "medicarepro-8588c",
+        storageBucket: "medicarepro-8588c.firebasestorage.app",
+        messagingSenderId: "541330848431",
+        appId: "1:541330848431:web:850f7cfd8a631e4cccb25a",
+      },
+      clinicId: "G-HQ3B5PZ2XJ"
+    };
+
+    const CloudCollections = ['patients', 'visits', 'medications', 'appointments', 'invoices', 'logs'];
 
     const Utils = {
       currency(value) {
@@ -246,6 +265,9 @@
       },
       uid(prefix = 'id') {
         return `${prefix}_${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
+      },
+      clone(value) {
+        return JSON.parse(JSON.stringify(value));
       },
       slug(text = '') {
         return text.toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
@@ -439,22 +461,190 @@
       }
     };
 
+    const FirebaseSync = {
+      app: null,
+      db: null,
+      baseRef: null,
+      unsubscribers: [],
+      saveTimer: null,
+      saveChain: Promise.resolve(),
+      remoteTimer: null,
+      initialized: false,
+      syncErrorShown: false,
+      firstSnapshots: {},
+      get deviceId() {
+        let deviceId = localStorage.getItem(StorageKeys.DEVICE_ID);
+        if (!deviceId) {
+          deviceId = Utils.uid('device');
+          localStorage.setItem(StorageKeys.DEVICE_ID, deviceId);
+        }
+        return deviceId;
+      },
+      isConfigured() {
+        const firebaseConfig = CloudConfig.firebase || {};
+        const firebaseReady = Object.values(firebaseConfig).every(value => value && !String(value).includes('YOUR_'));
+        return firebaseReady && CloudConfig.clinicId && !String(CloudConfig.clinicId).includes('YOUR_');
+      },
+      isAvailable() {
+        return !!(this.app && this.db && this.baseRef);
+      },
+      async init() {
+        if (this.initialized) return this.isAvailable();
+        this.initialized = true;
+        if (!window.firebase || !window.firebase.firestore || !this.isConfigured()) return false;
+        try {
+          if (!firebase.apps.length) firebase.initializeApp(CloudConfig.firebase);
+          this.app = firebase.app();
+          this.db = firebase.firestore();
+          this.baseRef = this.db.collection('medicareProClinics').doc(CloudConfig.clinicId).collection('entities');
+          return true;
+        } catch (error) {
+          console.error('Firebase init error:', error);
+          return false;
+        }
+      },
+      doc(key) {
+        return this.baseRef.doc(key);
+      },
+      async loadState() {
+        if (!await this.init()) return null;
+        const snapshots = await Promise.all(CloudCollections.map(key => this.doc(key).get()));
+        const hasRemoteData = snapshots.some(snapshot => snapshot.exists);
+        if (!hasRemoteData) return null;
+        const state = { patients: [], visits: [], medications: [], appointments: [], invoices: [], logs: [] };
+        CloudCollections.forEach((key, index) => {
+          const data = snapshots[index].data();
+          state[key] = Array.isArray(data?.items) ? data.items : [];
+        });
+        return state;
+      },
+      async saveState(state) {
+        if (!await this.init()) return false;
+        const batch = this.db.batch();
+        const snapshot = Utils.clone(state);
+        const serverTimestamp = firebase.firestore.FieldValue.serverTimestamp();
+        CloudCollections.forEach(key => {
+          batch.set(this.doc(key), {
+            items: Array.isArray(snapshot[key]) ? snapshot[key] : [],
+            updatedAt: serverTimestamp,
+            updatedBy: this.deviceId
+          }, { merge: true });
+        });
+        await batch.commit();
+        this.syncErrorShown = false;
+        return true;
+      },
+      queueSave(state) {
+        clearTimeout(this.saveTimer);
+        const snapshot = Utils.clone(state);
+        this.saveTimer = setTimeout(() => {
+          this.saveChain = this.saveChain
+            .then(() => this.saveState(snapshot))
+            .catch(error => {
+              console.error('Firebase sync error:', error);
+              if (!this.syncErrorShown && typeof UI !== 'undefined' && UI.toast) {
+                UI.toast('Không thể đồng bộ Firebase. Dữ liệu vẫn được lưu trên thiết bị hiện tại.', 'error');
+                this.syncErrorShown = true;
+              }
+            });
+        }, 250);
+      },
+      stopRealtime() {
+        this.unsubscribers.forEach(unsubscribe => unsubscribe());
+        this.unsubscribers = [];
+        this.firstSnapshots = {};
+      },
+      scheduleRemoteUpdate(onChange) {
+        clearTimeout(this.remoteTimer);
+        this.remoteTimer = setTimeout(() => onChange(), 180);
+      },
+      startRealtime(onChange) {
+        if (!this.isAvailable()) return false;
+        this.stopRealtime();
+        CloudCollections.forEach(key => {
+          const ref = this.doc(key);
+          const unsubscribe = ref.onSnapshot(snapshot => {
+            this.firstSnapshots[key] = (this.firstSnapshots[key] || 0) + 1;
+            if (!snapshot.exists || !DB.state) return;
+            if (this.firstSnapshots[key] === 1) return;
+            const data = snapshot.data() || {};
+            if (data.updatedBy === this.deviceId) return;
+            DB.state[key] = Array.isArray(data.items) ? data.items : [];
+            DB.persistCache();
+            this.scheduleRemoteUpdate(onChange);
+          }, error => console.error(`Firebase realtime error [${key}]:`, error));
+          this.unsubscribers.push(unsubscribe);
+        });
+        return true;
+      }
+    };
+
     const DB = {
       state: null,
-      load() {
+      cloudEnabled: false,
+      normalize(state) {
+        return {
+          patients: Array.isArray(state?.patients) ? state.patients : [],
+          visits: Array.isArray(state?.visits) ? state.visits : [],
+          medications: Array.isArray(state?.medications) ? state.medications : [],
+          appointments: Array.isArray(state?.appointments) ? state.appointments : [],
+          invoices: Array.isArray(state?.invoices) ? state.invoices : [],
+          logs: Array.isArray(state?.logs) ? state.logs : []
+        };
+      },
+      persistCache() {
+        localStorage.setItem(StorageKeys.DATA, JSON.stringify(this.state));
+      },
+      async load() {
         const existing = localStorage.getItem(StorageKeys.DATA);
-        if (!existing) {
-          this.state = Seed.create();
-          this.save();
-          return this.state;
+        if (existing) {
+          try {
+            this.state = this.normalize(JSON.parse(existing));
+          } catch (error) {
+            console.error('Local cache parse error:', error);
+            this.state = null;
+          }
         }
-        this.state = JSON.parse(existing);
+        this.cloudEnabled = await FirebaseSync.init();
+        if (this.cloudEnabled) {
+          try {
+            const remoteState = await FirebaseSync.loadState();
+            if (remoteState) {
+              this.state = this.normalize(remoteState);
+              this.persistCache();
+              return this.state;
+            }
+          } catch (error) {
+            console.error('Firebase load error:', error);
+          }
+        }
+        if (!this.state) {
+          this.state = Seed.create();
+          this.persistCache();
+          if (this.cloudEnabled) FirebaseSync.queueSave(this.state);
+        }
         return this.state;
       },
-      save() { localStorage.setItem(StorageKeys.DATA, JSON.stringify(this.state)); },
-      ensure() { if (!this.state) this.load(); return this.state; },
-      settings() { return JSON.parse(localStorage.getItem(StorageKeys.SETTINGS) || '{"theme":"light"}'); },
+      save() {
+        this.persistCache();
+        if (this.cloudEnabled) FirebaseSync.queueSave(this.state);
+      },
+      ensure() {
+        if (!this.state) this.state = this.normalize({});
+        return this.state;
+      },
+      settings() {
+        try {
+          return JSON.parse(localStorage.getItem(StorageKeys.SETTINGS) || '{"theme":"light"}');
+        } catch (error) {
+          return { theme: 'light' };
+        }
+      },
       saveSettings(settings) { localStorage.setItem(StorageKeys.SETTINGS, JSON.stringify(settings)); },
+      startRealtimeSync(onChange) {
+        if (!this.cloudEnabled) return false;
+        return FirebaseSync.startRealtime(onChange);
+      },
       log(action, message, entityType, entityId) {
         this.ensure().logs.unshift({ id: Utils.uid('log'), action, message, entityType, entityId, createdAt: new Date().toISOString() });
         this.state.logs = this.state.logs.slice(0, 150);
@@ -701,6 +891,8 @@
           clearGlobalSearchBtn: document.getElementById('clearGlobalSearchBtn'),
           dashboardView: document.getElementById('dashboardView'),
           patientsView: document.getElementById('patientsView'),
+          patientProfileView: document.getElementById('patientProfileView'),
+          metricFocusView: document.getElementById('metricFocusView'),
           appointmentsView: document.getElementById('appointmentsView'),
           invoicesView: document.getElementById('invoicesView'),
           activityView: document.getElementById('activityView')
@@ -777,26 +969,31 @@
         appointmentTab: 'Scheduled',
         invoiceFilter: 'All',
         globalSearchKeyword: '',
+        metricFocusKey: '',
         theme: 'light'
       },
-      metricCard(title, value, icon, helper, gradient) {
+      metricCard(title, value, icon, helper, gradient, action = '') {
+        const tag = action ? 'button' : 'div';
+        const attrs = action ? `data-dashboard-metric="${action}"` : '';
         return `
-          <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-soft dark:border-slate-800 dark:bg-slate-900">
+          <${tag} ${attrs} class="rounded-3xl border border-slate-200 bg-white p-5 text-left shadow-soft transition ${action ? 'hover:-translate-y-0.5 hover:border-primary-200 hover:shadow-lg dark:hover:border-primary-800' : ''} dark:border-slate-800 dark:bg-slate-900">
             <div class="flex items-start justify-between gap-4">
               <div><p class="text-sm font-medium text-slate-500 dark:text-slate-400">${title}</p><p class="mt-3 text-2xl font-bold tracking-tight">${value}</p><p class="mt-2 text-sm text-slate-500 dark:text-slate-400">${helper}</p></div>
               <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br ${gradient} text-xl text-white shadow-lg"><i class="fa-solid ${icon}"></i></div>
             </div>
-          </div>
+          </${tag}>
         `;
       },
-      smallStat(label, value, icon) {
+      smallStat(label, value, icon, action = '') {
+        const tag = action ? 'button' : 'div';
+        const attrs = action ? `data-patient-overview-stat="${action}"` : '';
         return `
-          <div class="rounded-3xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/40">
+          <${tag} ${attrs} class="rounded-3xl border border-slate-200 bg-white p-4 text-left transition ${action ? 'hover:-translate-y-0.5 hover:border-primary-200 hover:shadow-soft dark:hover:border-primary-800' : ''} dark:border-slate-800 dark:bg-slate-950/40">
             <div class="flex items-center gap-3">
               <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary-50 text-primary-600 dark:bg-primary-950/40 dark:text-primary-300"><i class="fa-solid ${icon}"></i></div>
               <div><p class="text-sm text-slate-500 dark:text-slate-400">${label}</p><p class="text-lg font-bold">${value}</p></div>
             </div>
-          </div>
+          </${tag}>
         `;
       },
       infoCard(title, rows) {
@@ -827,6 +1024,8 @@
         const titleMap = {
           dashboard: 'Dashboard',
           patients: 'Quản lý bệnh nhân',
+          patientProfile: 'Hồ sơ bệnh nhân',
+          metricFocus: 'Chi tiết thống kê',
           appointments: 'Quản lý lịch hẹn',
           invoices: 'Quản lý viện phí',
           activity: 'Activity Log'
@@ -834,8 +1033,9 @@
         UI.els.pageTitle.textContent = titleMap[view] || 'MediCare Pro';
         document.querySelectorAll('.view-panel').forEach(el => el.classList.add('hidden'));
         document.getElementById(`${view}View`).classList.remove('hidden');
+        const activeNavView = { patientProfile: 'patients', metricFocus: 'dashboard' }[view] || view;
         document.querySelectorAll('.nav-btn').forEach(btn => {
-          const active = btn.dataset.view === view;
+          const active = btn.dataset.view === activeNavView;
           btn.classList.toggle('bg-primary-50', active);
           btn.classList.toggle('text-primary-700', active);
           btn.classList.toggle('dark:bg-primary-950/40', active);
@@ -846,6 +1046,8 @@
       renderAll() {
         this.renderDashboard();
         this.renderPatients();
+        this.renderPatientProfile();
+        this.renderMetricFocus();
         this.renderAppointments();
         this.renderInvoices();
         this.renderActivity();
@@ -857,10 +1059,10 @@
         const patientMap = new Map(DB.list('patients').map(p => [p.id, p]));
         UI.els.dashboardView.innerHTML = `
           <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            ${this.metricCard('Tổng bệnh nhân', data.totalPatients, 'fa-user-injured', 'Theo dõi hồ sơ EMR', 'from-primary-500 to-primary-700')}
-            ${this.metricCard('Nguy cơ cao', data.highRisk, 'fa-triangle-exclamation', 'Cần theo dõi sát', 'from-rose-500 to-rose-600')}
-            ${this.metricCard('Lịch hẹn sắp tới', data.upcomingCount, 'fa-calendar-day', 'Trong các lịch gần nhất', 'from-sky-500 to-sky-600')}
-            ${this.metricCard('Doanh thu đã thu', Utils.currency(data.paidRevenue), 'fa-wallet', 'Tổng doanh thu đã thanh toán', 'from-emerald-500 to-emerald-600')}
+            ${this.metricCard('Tổng bệnh nhân', data.totalPatients, 'fa-user-injured', 'Bấm để xem danh sách bệnh nhân.', 'from-primary-500 to-primary-700', 'totalPatients')}
+            ${this.metricCard('Nguy cơ cao', data.highRisk, 'fa-triangle-exclamation', 'Bấm để xem 15 bệnh nhân nguy cơ cao.', 'from-rose-500 to-rose-600', 'highRisk')}
+            ${this.metricCard('Lịch hẹn sắp tới', data.upcomingCount, 'fa-calendar-day', 'Bấm để xem 15 lịch hẹn gần nhất.', 'from-sky-500 to-sky-600', 'upcomingAppointments')}
+            ${this.metricCard('Doanh thu đã thu', Utils.currency(data.paidRevenue), 'fa-wallet', 'Bấm để xem 15 hóa đơn đã thanh toán.', 'from-emerald-500 to-emerald-600', 'paidRevenue')}
           </div>
           <div class="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
             <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-soft dark:border-slate-800 dark:bg-slate-900">
@@ -917,9 +1119,9 @@
             ${this.infoCard('Y khoa', [['Nhóm máu', patient.bloodType || 'N/A'], ['Dị ứng', patient.allergies || 'Không'], ['Bệnh nền', patient.chronicConditions || 'Không'], ['Nguy cơ', `<span class="status-chip ${Utils.statusClasses('risk', patient.riskLevel)}">${patient.riskLevel}</span>`], ['Liên hệ khẩn', patient.emergencyContact || 'N/A'], ['Ghi chú', patient.notes || 'Không']])}
           </div>
           <div class="grid gap-4 xl:grid-cols-3">
-            ${this.smallStat('Tổng lượt khám', bundle.visits.length, 'fa-stethoscope')}
-            ${this.smallStat('Đơn thuốc', bundle.medications.length, 'fa-pills')}
-            ${this.smallStat('Hóa đơn', bundle.invoices.length, 'fa-file-invoice-dollar')}
+            ${this.smallStat('Tổng lượt khám', bundle.visits.length, 'fa-stethoscope', 'visits')}
+            ${this.smallStat('Đơn thuốc', bundle.medications.length, 'fa-pills', 'medications')}
+            ${this.smallStat('Hóa đơn', bundle.invoices.length, 'fa-file-invoice-dollar', 'invoices')}
           </div>`;
 
         const visitHtml = bundle.visits.length ? bundle.visits.map(visit => `
@@ -970,44 +1172,107 @@
         if (this.state.patientPage > totalPages) this.state.patientPage = 1;
         const start = (this.state.patientPage - 1) * this.state.patientPageSize;
         const paginated = patients.slice(start, start + this.state.patientPageSize);
-        const selectedPatient = this.state.selectedPatientId ? DB.getById('patients', this.state.selectedPatientId) : null;
         UI.els.patientsView.innerHTML = `
-          <div class="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-            <div class="space-y-6">
-              <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-soft dark:border-slate-800 dark:bg-slate-900">
-                <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                  <div><h3 class="text-lg font-bold">Danh sách bệnh nhân</h3><p class="text-sm text-slate-500 dark:text-slate-400">Tìm kiếm nhanh, lọc theo rủi ro và xem hồ sơ chi tiết.</p></div>
-                  <div class="flex flex-wrap gap-2"><button id="exportPatientsAllBtn" class="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold hover:border-primary-200 hover:text-primary-600 dark:border-slate-700"><i class="fa-solid fa-file-arrow-down mr-2"></i>Export hồ sơ</button><button id="newPatientBtn" class="rounded-2xl bg-primary-600 px-4 py-3 text-sm font-semibold text-white hover:bg-primary-700"><i class="fa-solid fa-plus mr-2"></i>Thêm mới</button></div>
-                </div>
-                <div class="mt-5 grid gap-3 md:grid-cols-[1fr_auto]">
-                  <div class="relative"><i class="fa-solid fa-magnifying-glass pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"></i><input id="patientSearchInput" value="${this.escapeAttr(this.state.patientSearch)}" type="text" placeholder="Tìm theo mã BN, tên, số điện thoại..." class="w-full rounded-2xl border border-slate-200 bg-slate-50 py-3 pl-11 pr-4 text-sm outline-none transition focus:border-primary-400 focus:bg-white focus:ring-4 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-900 dark:focus:ring-primary-900/40"></div>
-                  <div class="flex flex-wrap gap-2">${['All', 'High', 'Medium', 'Low'].map(filter => `<button data-risk-filter="${filter}" class="rounded-2xl px-4 py-3 text-sm font-semibold ${this.state.patientRiskFilter === filter ? 'bg-primary-600 text-white' : 'border border-slate-200 hover:border-primary-200 hover:text-primary-600 dark:border-slate-700'}">${filter === 'All' ? 'Tất cả' : filter}</button>`).join('')}</div>
-                </div>
+          <div class="space-y-6">
+            <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-soft dark:border-slate-800 dark:bg-slate-900">
+              <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div><h3 class="text-lg font-bold">Danh sách bệnh nhân</h3><p class="text-sm text-slate-500 dark:text-slate-400">Bấm vào từng bệnh nhân để mở hồ sơ ở màn hình riêng, dễ quan sát hơn trên điện thoại.</p></div>
+                <div class="flex flex-wrap gap-2"><button id="exportPatientsAllBtn" class="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold hover:border-primary-200 hover:text-primary-600 dark:border-slate-700"><i class="fa-solid fa-file-arrow-down mr-2"></i>Export hồ sơ</button><button id="newPatientBtn" class="rounded-2xl bg-primary-600 px-4 py-3 text-sm font-semibold text-white hover:bg-primary-700"><i class="fa-solid fa-plus mr-2"></i>Thêm mới</button></div>
               </div>
-              <div class="rounded-3xl border border-slate-200 bg-white p-4 shadow-soft dark:border-slate-800 dark:bg-slate-900">
-                <div class="mb-4 flex items-center justify-between"><p class="text-sm font-semibold">${patients.length} bệnh nhân phù hợp</p><p class="text-xs text-slate-500 dark:text-slate-400">Trang ${this.state.patientPage}/${totalPages}</p></div>
-                <div class="space-y-3">
-                  ${paginated.length ? paginated.map(patient => `<button data-open-patient="${patient.id}" class="group w-full rounded-2xl border ${this.state.selectedPatientId === patient.id ? 'border-primary-300 bg-primary-50 dark:border-primary-800 dark:bg-primary-950/30' : 'border-slate-200 hover:border-primary-200 dark:border-slate-800 dark:hover:border-primary-800'} p-4 text-left transition hover:-translate-y-0.5 hover:shadow-soft"><div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><p class="font-semibold">${patient.fullName}</p><span class="status-chip ${Utils.statusClasses('risk', patient.riskLevel)}">${patient.riskLevel}</span></div><p class="mt-1 text-sm text-slate-500 dark:text-slate-400">${patient.code} • ${patient.gender} • ${Utils.ageFromDob(patient.dob)} tuổi</p><p class="mt-2 truncate text-sm text-slate-500 dark:text-slate-400">${patient.phone} • ${patient.address}</p></div><i class="fa-solid fa-chevron-right text-slate-300 transition group-hover:text-primary-500"></i></div></button>`).join('') : UI.emptyState({ icon: 'fa-user-slash', title: 'Không tìm thấy bệnh nhân', description: 'Thử thay đổi từ khóa hoặc bộ lọc rủi ro để mở rộng kết quả.', actionLabel: 'Thêm bệnh nhân', action: 'new-patient' })}
-                </div>
-                <div class="mt-4 flex items-center justify-between gap-3 border-t border-slate-200 pt-4 dark:border-slate-800"><button id="prevPatientPageBtn" class="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-semibold hover:border-primary-200 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700" ${this.state.patientPage === 1 ? 'disabled' : ''}>Trước</button><button id="nextPatientPageBtn" class="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-semibold hover:border-primary-200 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700" ${this.state.patientPage >= totalPages ? 'disabled' : ''}>Sau</button></div>
+              <div class="mt-5 grid gap-3 md:grid-cols-[1fr_auto]">
+                <div class="relative"><i class="fa-solid fa-magnifying-glass pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"></i><input id="patientSearchInput" value="${this.escapeAttr(this.state.patientSearch)}" type="text" placeholder="Tìm theo mã BN, tên, số điện thoại..." class="w-full rounded-2xl border border-slate-200 bg-slate-50 py-3 pl-11 pr-4 text-sm outline-none transition focus:border-primary-400 focus:bg-white focus:ring-4 focus:ring-primary-100 dark:border-slate-700 dark:bg-slate-900 dark:focus:ring-primary-900/40"></div>
+                <div class="flex flex-wrap gap-2">${['All', 'High', 'Medium', 'Low'].map(filter => `<button data-risk-filter="${filter}" class="rounded-2xl px-4 py-3 text-sm font-semibold ${this.state.patientRiskFilter === filter ? 'bg-primary-600 text-white' : 'border border-slate-200 hover:border-primary-200 hover:text-primary-600 dark:border-slate-700'}">${filter === 'All' ? 'Tất cả' : filter}</button>`).join('')}</div>
               </div>
             </div>
-            <div class="space-y-6">
-              ${selectedPatient ? this.renderPatientDetail(selectedPatient.id) : UI.emptyState({ icon: 'fa-notes-medical', title: 'Chọn một bệnh nhân', description: 'Nhấn vào bệnh nhân bên trái để xem hồ sơ tổng quan, lịch sử khám, thuốc, lịch hẹn và hóa đơn.', actionLabel: '', action: '' })}
+            <div class="rounded-3xl border border-slate-200 bg-white p-4 shadow-soft dark:border-slate-800 dark:bg-slate-900">
+              <div class="mb-4 flex items-center justify-between"><p class="text-sm font-semibold">${patients.length} bệnh nhân phù hợp</p><p class="text-xs text-slate-500 dark:text-slate-400">Trang ${this.state.patientPage}/${totalPages}</p></div>
+              <div class="space-y-3">
+                ${paginated.length ? paginated.map(patient => `<button data-open-patient="${patient.id}" class="group w-full rounded-2xl border ${this.state.selectedPatientId === patient.id ? 'border-primary-300 bg-primary-50 dark:border-primary-800 dark:bg-primary-950/30' : 'border-slate-200 hover:border-primary-200 dark:border-slate-800 dark:hover:border-primary-800'} p-4 text-left transition hover:-translate-y-0.5 hover:shadow-soft"><div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><p class="font-semibold">${patient.fullName}</p><span class="status-chip ${Utils.statusClasses('risk', patient.riskLevel)}">${patient.riskLevel}</span></div><p class="mt-1 text-sm text-slate-500 dark:text-slate-400">${patient.code} • ${patient.gender} • ${Utils.ageFromDob(patient.dob)} tuổi</p><p class="mt-2 truncate text-sm text-slate-500 dark:text-slate-400">${patient.phone} • ${patient.address}</p></div><i class="fa-solid fa-chevron-right text-slate-300 transition group-hover:text-primary-500"></i></div></button>`).join('') : UI.emptyState({ icon: 'fa-user-slash', title: 'Không tìm thấy bệnh nhân', description: 'Thử thay đổi từ khóa hoặc bộ lọc rủi ro để mở rộng kết quả.', actionLabel: 'Thêm bệnh nhân', action: 'new-patient' })}
+              </div>
+              <div class="mt-4 flex items-center justify-between gap-3 border-t border-slate-200 pt-4 dark:border-slate-800"><button id="prevPatientPageBtn" class="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-semibold hover:border-primary-200 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700" ${this.state.patientPage === 1 ? 'disabled' : ''}>Trước</button><button id="nextPatientPageBtn" class="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-semibold hover:border-primary-200 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700" ${this.state.patientPage >= totalPages ? 'disabled' : ''}>Sau</button></div>
             </div>
           </div>`;
       },
       focusPatient(patientId, tab = 'overview') {
         this.state.selectedPatientId = patientId;
         this.state.patientDetailTab = tab;
-        this.switchView('patients');
-        setTimeout(() => {
-          const panel = document.getElementById('patientDetailPanel');
-          if (!panel) return;
-          panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          panel.classList.add('ring-2', 'ring-primary-300', 'dark:ring-primary-700');
-          setTimeout(() => panel.classList.remove('ring-2', 'ring-primary-300', 'dark:ring-primary-700'), 1200);
-        }, 80);
+        this.switchView('patientProfile');
+      },
+      renderPatientProfile() {
+        const patient = this.state.selectedPatientId ? DB.getById('patients', this.state.selectedPatientId) : null;
+        UI.els.patientProfileView.innerHTML = patient ? `
+          <div class="space-y-6">
+            <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-soft dark:border-slate-800 dark:bg-slate-900">
+              <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <button data-switch-view="patients" class="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2 text-sm font-semibold hover:border-primary-200 hover:text-primary-600 dark:border-slate-700"><i class="fa-solid fa-arrow-left"></i>Quay lại danh sách bệnh nhân</button>
+                  <h3 class="mt-4 text-xl font-bold">${patient.fullName}</h3>
+                  <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Màn hình hồ sơ riêng giúp dễ theo dõi hơn trên điện thoại và máy tính.</p>
+                </div>
+              </div>
+            </div>
+            ${this.renderPatientDetail(patient.id)}
+          </div>
+        ` : UI.emptyState({ icon: 'fa-notes-medical', title: 'Chưa chọn bệnh nhân', description: 'Quay lại danh sách bệnh nhân và chọn một hồ sơ để xem chi tiết.', actionLabel: 'Mở danh sách bệnh nhân', action: 'patient-list' });
+      },
+      openMetricFocus(metricKey) {
+        this.state.metricFocusKey = metricKey;
+        this.switchView('metricFocus');
+      },
+      renderMetricFocus() {
+        const patientMap = new Map(DB.list('patients').map(p => [p.id, p]));
+        const now = new Date();
+        let title = 'Chi tiết thống kê';
+        let description = 'Danh sách liên quan đến chỉ số đã chọn.';
+        let html = '';
+
+        if (this.state.metricFocusKey === 'totalPatients') {
+          const patients = DB.list('patients').sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+          title = 'Tổng bệnh nhân';
+          description = `Hiển thị ${patients.length} bệnh nhân, sắp xếp theo lần cập nhật gần nhất.`;
+          html = patients.length ? patients.map(patient => `<button data-open-patient="${patient.id}" class="group w-full rounded-2xl border border-slate-200 p-4 text-left transition hover:-translate-y-0.5 hover:border-primary-200 hover:shadow-soft dark:border-slate-800 dark:hover:border-primary-800"><div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><p class="font-semibold">${patient.fullName}</p><span class="status-chip ${Utils.statusClasses('risk', patient.riskLevel)}">${patient.riskLevel}</span></div><p class="mt-1 text-sm text-slate-500 dark:text-slate-400">${patient.code} • ${patient.gender} • ${Utils.ageFromDob(patient.dob)} tuổi</p><p class="mt-2 truncate text-sm text-slate-500 dark:text-slate-400">${patient.phone} • ${patient.address}</p></div><i class="fa-solid fa-chevron-right text-slate-300 transition group-hover:text-primary-500"></i></div></button>`).join('') : UI.emptyState({ icon: 'fa-user-slash', title: 'Chưa có bệnh nhân', description: 'Thêm bệnh nhân mới để bắt đầu quản lý hồ sơ.', actionLabel: 'Thêm bệnh nhân', action: 'new-patient' });
+        }
+
+        if (this.state.metricFocusKey === 'highRisk') {
+          const patients = DB.list('patients').filter(patient => patient.riskLevel === 'High').sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)).slice(0, 15);
+          title = 'Nguy cơ cao';
+          description = 'Hiển thị 15 bệnh nhân nguy cơ cao gần nhất để tiện theo dõi.';
+          html = patients.length ? patients.map(patient => `<button data-open-patient="${patient.id}" class="group w-full rounded-2xl border border-rose-200 p-4 text-left transition hover:-translate-y-0.5 hover:border-rose-300 hover:shadow-soft dark:border-rose-900/40 dark:hover:border-rose-700"><div class="flex items-start justify-between gap-4"><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><p class="font-semibold">${patient.fullName}</p><span class="status-chip ${Utils.statusClasses('risk', patient.riskLevel)}">${patient.riskLevel}</span></div><p class="mt-1 text-sm text-slate-500 dark:text-slate-400">${patient.code} • ${patient.phone}</p><p class="mt-2 truncate text-sm text-slate-500 dark:text-slate-400">${patient.chronicConditions || patient.notes || patient.address}</p></div><i class="fa-solid fa-chevron-right text-rose-300 transition group-hover:text-rose-500"></i></div></button>`).join('') : UI.emptyState({ icon: 'fa-shield-heart', title: 'Không có bệnh nhân nguy cơ cao', description: 'Hiện tại chưa có hồ sơ nào thuộc nhóm nguy cơ cao.', actionLabel: '', action: '' });
+        }
+
+        if (this.state.metricFocusKey === 'upcomingAppointments') {
+          const appointments = DB.list('appointments').filter(item => new Date(item.date) >= now && item.status === 'Scheduled').sort((a, b) => new Date(a.date) - new Date(b.date)).slice(0, 15);
+          title = 'Lịch hẹn sắp tới';
+          description = 'Hiển thị 15 lịch hẹn sắp tới gần nhất.';
+          html = appointments.length ? appointments.map(appt => {
+            const patient = patientMap.get(appt.patientId);
+            return `<div class="rounded-2xl border border-slate-200 p-4 transition hover:border-primary-200 hover:shadow-soft dark:border-slate-800 dark:hover:border-primary-800"><div class="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between"><div><div class="flex flex-wrap items-center gap-2"><button data-open-patient="${appt.patientId}" data-open-patient-tab="appointments" class="font-semibold text-left hover:text-primary-600">${patient?.fullName || 'N/A'}</button><span class="text-xs text-slate-500 dark:text-slate-400">${patient?.code || ''}</span><span class="status-chip ${Utils.statusClasses('appointment', appt.status)}">${appt.status}</span></div><p class="mt-2 text-sm text-slate-500 dark:text-slate-400">${Utils.date(appt.date, { dateStyle: 'medium', timeStyle: 'short' })} • ${appt.department} • ${appt.doctor}</p><p class="mt-2 text-sm text-slate-600 dark:text-slate-300">${appt.reason}</p></div><div class="flex flex-wrap gap-2"><button data-open-patient="${appt.patientId}" data-open-patient-tab="appointments" class="rounded-xl border border-primary-200 px-3 py-2 text-sm text-primary-700 hover:bg-primary-50 dark:border-primary-800 dark:text-primary-300 dark:hover:bg-primary-950/40">Xem hồ sơ</button><button data-edit-appointment="${appt.id}" class="rounded-xl border border-slate-200 px-3 py-2 text-sm hover:border-primary-200 hover:text-primary-600 dark:border-slate-700">Sửa</button></div></div></div>`;
+          }).join('') : UI.emptyState({ icon: 'fa-calendar-xmark', title: 'Không có lịch hẹn sắp tới', description: 'Tạo lịch hẹn mới để theo dõi tái khám và lịch khám.', actionLabel: 'Tạo lịch hẹn', action: 'new-appointment' });
+        }
+
+        if (this.state.metricFocusKey === 'paidRevenue') {
+          const invoices = DB.list('invoices').filter(item => item.status === 'Paid').sort((a, b) => new Date(b.issuedAt) - new Date(a.issuedAt)).slice(0, 15);
+          title = 'Doanh thu đã thu';
+          description = 'Hiển thị 15 hóa đơn đã thanh toán gần nhất.';
+          html = invoices.length ? invoices.map(inv => {
+            const patient = patientMap.get(inv.patientId);
+            return `<div class="rounded-2xl border border-slate-200 p-4 transition hover:border-primary-200 hover:shadow-soft dark:border-slate-800 dark:hover:border-primary-800"><div class="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between"><div><div class="flex flex-wrap items-center gap-2"><p class="font-semibold">${inv.invoiceNo}</p><span class="status-chip ${Utils.statusClasses('invoice', inv.status)}">${inv.status}</span></div><p class="mt-2 text-sm text-slate-500 dark:text-slate-400"><button data-open-patient="${inv.patientId}" data-open-patient-tab="invoices" class="font-medium hover:text-primary-600">${patient?.fullName || 'N/A'}</button> • ${patient?.code || ''}</p><p class="mt-2 text-sm text-slate-600 dark:text-slate-300">${inv.description}</p><p class="mt-2 text-xs text-slate-500 dark:text-slate-400">Phát hành ${Utils.date(inv.issuedAt)} • Hạn ${Utils.date(inv.dueDate)}</p></div><div class="flex flex-wrap items-center gap-2"><div class="mr-2 text-right"><p class="text-lg font-bold">${Utils.currency(inv.amount)}</p></div><button data-open-patient="${inv.patientId}" data-open-patient-tab="invoices" class="rounded-xl border border-primary-200 px-3 py-2 text-sm text-primary-700 hover:bg-primary-50 dark:border-primary-800 dark:text-primary-300 dark:hover:bg-primary-950/40">Xem hồ sơ</button><button data-edit-invoice="${inv.id}" class="rounded-xl border border-slate-200 px-3 py-2 text-sm hover:border-primary-200 hover:text-primary-600 dark:border-slate-700">Sửa</button></div></div></div>`;
+          }).join('') : UI.emptyState({ icon: 'fa-wallet', title: 'Chưa có hóa đơn đã thanh toán', description: 'Khi có hóa đơn ở trạng thái Paid, dữ liệu sẽ hiển thị tại đây.', actionLabel: '', action: '' });
+        }
+
+        UI.els.metricFocusView.innerHTML = `
+          <div class="space-y-6">
+            <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-soft dark:border-slate-800 dark:bg-slate-900">
+              <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <button data-switch-view="dashboard" class="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2 text-sm font-semibold hover:border-primary-200 hover:text-primary-600 dark:border-slate-700"><i class="fa-solid fa-arrow-left"></i>Quay lại Dashboard</button>
+                  <h3 class="mt-4 text-xl font-bold">${title}</h3>
+                  <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">${description}</p>
+                </div>
+              </div>
+            </div>
+            <div class="space-y-3">${html || UI.emptyState({ icon: 'fa-chart-column', title: 'Chưa có dữ liệu', description: 'Chọn một chỉ số ở Dashboard để xem danh sách chi tiết.', actionLabel: '', action: '' })}</div>
+          </div>`;
       },
       renderAppointments() {
         const appointments = DB.list('appointments').sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -1216,6 +1481,7 @@
       },
       bindDynamicEvents() {
         document.querySelectorAll('[data-open-patient]').forEach(btn => btn.addEventListener('click', () => this.focusPatient(btn.dataset.openPatient, btn.dataset.openPatientTab || 'overview')));
+        document.querySelectorAll('[data-empty-action="patient-list"]').forEach(btn => btn.addEventListener('click', () => this.switchView('patients')));
         document.querySelectorAll('[data-empty-action="new-patient"]').forEach(btn => btn.addEventListener('click', () => { this.openPatientModal(); this.bindFormSubmitters(); }));
         document.querySelectorAll('[data-empty-action="new-appointment"]').forEach(btn => btn.addEventListener('click', () => { this.openAppointmentModal(); this.bindFormSubmitters(); }));
         document.querySelectorAll('[data-empty-action="new-visit"]').forEach(btn => btn.addEventListener('click', () => { this.openVisitModal(); this.bindFormSubmitters(); }));
@@ -1299,9 +1565,15 @@
         document.addEventListener('click', (e) => { if (e.target.closest('[data-modal-close]')) UI.closeModal(); });
 
         document.addEventListener('click', (e) => {
+          const switchViewBtn = e.target.closest('[data-switch-view]');
+          if (switchViewBtn) { this.switchView(switchViewBtn.dataset.switchView); return; }
+          const dashboardMetric = e.target.closest('[data-dashboard-metric]');
+          if (dashboardMetric) { this.openMetricFocus(dashboardMetric.dataset.dashboardMetric); return; }
           const openPatient = e.target.closest('[data-open-patient]');
           if (openPatient) { this.focusPatient(openPatient.dataset.openPatient, openPatient.dataset.openPatientTab || 'overview'); return; }
-          const tabBtn = e.target.closest('[data-patient-tab]'); if (tabBtn) { this.state.patientDetailTab = tabBtn.dataset.patientTab; this.renderPatients(); this.bindDynamicEvents(); return; }
+          const overviewStatBtn = e.target.closest('[data-patient-overview-stat]');
+          if (overviewStatBtn) { this.state.patientDetailTab = overviewStatBtn.dataset.patientOverviewStat; this.switchView('patientProfile'); return; }
+          const tabBtn = e.target.closest('[data-patient-tab]'); if (tabBtn) { this.state.patientDetailTab = tabBtn.dataset.patientTab; this.renderAll(); this.bindDynamicEvents(); return; }
           const riskBtn = e.target.closest('[data-risk-filter]'); if (riskBtn) { this.state.patientRiskFilter = riskBtn.dataset.riskFilter; this.state.patientPage = 1; this.renderPatients(); this.bindDynamicEvents(); return; }
           const apptTabBtn = e.target.closest('[data-appointment-tab]'); if (apptTabBtn) { this.state.appointmentTab = apptTabBtn.dataset.appointmentTab; this.renderAppointments(); this.bindDynamicEvents(); return; }
           const invoiceFilterBtn = e.target.closest('[data-invoice-filter]'); if (invoiceFilterBtn) { this.state.invoiceFilter = invoiceFilterBtn.dataset.invoiceFilter; this.renderInvoices(); this.bindDynamicEvents(); return; }
@@ -1335,13 +1607,27 @@
           if (e.target.id === 'nextPatientPageBtn') { const totalPages = Math.max(1, Math.ceil(this.getFilteredPatients().length / this.state.patientPageSize)); this.state.patientPage = Math.min(totalPages, this.state.patientPage + 1); this.renderPatients(); this.bindDynamicEvents(); }
         });
       },
-      init() {
-        DB.load(); UI.init();
-        this.state.theme = DB.settings().theme || 'light';
-        this.applyTheme();
-        this.bindEvents();
-        this.renderAll();
-        this.bindDynamicEvents();
+      async init() {
+        UI.init();
+        UI.setLoading(true);
+        try {
+          await DB.load();
+          this.state.theme = DB.settings().theme || 'light';
+          this.applyTheme();
+          this.bindEvents();
+          this.renderAll();
+          this.bindDynamicEvents();
+          DB.startRealtimeSync(() => {
+            this.renderAll();
+            this.bindDynamicEvents();
+            UI.toast('Dữ liệu vừa được đồng bộ từ thiết bị khác.', 'info');
+          });
+        } catch (error) {
+          console.error('App init error:', error);
+          UI.toast('Không thể khởi tạo dữ liệu ứng dụng.', 'error');
+        } finally {
+          UI.setLoading(false);
+        }
       }
     };
 
