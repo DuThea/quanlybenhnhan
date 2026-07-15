@@ -77,6 +77,7 @@
   .view-head{display:flex;align-items:baseline;gap:10px;margin:2px 2px 14px;}
   .view-head h2{font-size:19px;}
   .view-head .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--ink-3);text-transform:uppercase;}
+  .subhead{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--ink-3);text-transform:uppercase;margin:2px 2px 10px;}
   .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:14px;}
   .card.tight{padding:13px 14px;}
   .card h3{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2);font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px;}
@@ -415,6 +416,34 @@ function cycleEquity(c){
   return (c.deposit||0)+(c.bonus||0)+p;
 }
 function totalVolume(cid){ return tradesOf(cid).reduce((s,t)=>s+(t.size||0),0); }
+
+// All-time aggregates across EVERY cycle. Uses the same source fields
+// (trade.size, trade.pnl, result) as edgeStats/cycleEquity/totalVolume, so
+// these numbers reconcile exactly with the Edge card and the cycle cards.
+function lifetimeStats(){
+  const t=state.trades;
+  const trades=t.length;
+  const wins=t.filter(x=>x.result==="WIN").length;
+  const turnover=t.reduce((s,x)=>s+(x.size||0),0);   // volume: thắng+thua+hòa
+  const profit=t.reduce((s,x)=>s+(x.pnl||0),0);      // lãi/lỗ ròng
+  return {trades, wins, winRate: trades?wins/trades:0, turnover, profit};
+}
+
+// Per-cycle summary (for cycle history). Recomputed from the cycle's trades,
+// which persist after the cycle closes — nothing is lost on "Kết thúc chu kỳ".
+function cycleSummary(c){
+  const t=tradesOf(c.id);
+  const trades=t.length;
+  const wins=t.filter(x=>x.result==="WIN").length;
+  const turnover=t.reduce((s,x)=>s+(x.size||0),0);
+  const pnl=t.reduce((s,x)=>s+(x.pnl||0),0);
+  const deposit=c.deposit||0, bonus=c.bonus||0;
+  const endEquity=deposit+bonus+pnl;
+  const req=bonus*state.settings.bonusTurnoverX;
+  const turnoverMet = req>0 ? turnover>=req : true;
+  const roiPct = (deposit+bonus)>0 ? pnl/(deposit+bonus) : 0;
+  return {trades, wins, winRate: trades?wins/trades:0, turnover, pnl, deposit, bonus, endEquity, req, turnoverMet, roiPct};
+}
 
 // martingale ladder (RiskEngine) — matches spec: net win = +1 Base each tier
 function ladder(capital, S){
@@ -765,7 +794,19 @@ function viewDashboard(){
     ${e.stateKey==="negative"?`<div class="sep"></div><div style="font-size:12.5px;color:var(--neg);line-height:1.4">${iAlertInline} Với win rate hiện tại, mỗi $1 giao dịch kỳ vọng lỗ ${money(-e.ev)}. Không có "gấp thếp vô hạn" nào cứu được kỳ vọng âm — xem tab Rủi ro.</div>`:""}
   </div>`;
 
-  if(!c) return `<section class="view"><div class="view-head"><span class="eyebrow">Expectancy</span><h2>Tổng quan</h2></div>${edgeCard}${noCycleInline()}</section>`;
+  // all-time trading stats (sits ABOVE the edge card)
+  const L2=lifetimeStats();
+  const statsCard=`<div class="card">
+    <h3>${iStats} Thống kê giao dịch <span style="color:var(--ink-3);font-weight:500;font-size:11px">· toàn thời gian</span></h3>
+    <div class="grid2">
+      <div class="stat"><span class="k">Trades</span><span class="v">${L2.trades}</span><span class="sub">tổng số lệnh đã đánh</span></div>
+      <div class="stat"><span class="k">Profitable Trades</span><span class="v">${L2.wins}<span style="font-size:15px;color:var(--ink-3)">/${L2.trades}</span></span><span class="sub">${pct(L2.winRate)} thắng</span></div>
+      <div class="stat"><span class="k">Trading Turnover</span><span class="v sm">${money0(L2.turnover)}</span><span class="sub">volume (thắng+thua+hòa)</span></div>
+      <div class="stat"><span class="k">Trading Profit</span><span class="v sm ${L2.profit>=0?'pos':'neg'}">${signed(L2.profit)}</span><span class="sub">tổng lãi/lỗ ròng</span></div>
+    </div>
+  </div>`;
+
+  if(!c) return `<section class="view"><div class="view-head"><span class="eyebrow">Expectancy</span><h2>Tổng quan</h2></div>${statsCard}${edgeCard}${noCycleInline()}</section>`;
 
   const eq=cycleEquity(c);
   const realized=eq-(c.deposit||0)-(c.bonus||0);
@@ -800,7 +841,7 @@ function viewDashboard(){
     ${days.length>=2?lineChart(theo, actual, {aLabel:`Lý thuyết +${S.dailyTargetPct}%/ngày`, bLabel:"Thực tế"}):`<div class="empty">Cần ít nhất 2 ngày dữ liệu để vẽ đường vốn.</div>`}
   </div>`;
 
-  return `<section class="view"><div class="view-head"><span class="eyebrow">Expectancy</span><h2>Tổng quan</h2></div>${edgeCard}${cycleCard}${curveCard}</section>`;
+  return `<section class="view"><div class="view-head"><span class="eyebrow">Expectancy</span><h2>Tổng quan</h2></div>${statsCard}${edgeCard}${cycleCard}${curveCard}</section>`;
 }
 
 function equitySeries(c){
@@ -899,7 +940,50 @@ function viewLog(){
   for(const t of state.trades){ const k=dayKey(t.date); if(!byDay.has(k)) byDay.set(k,[]); byDay.get(k).push(t); }
   const days=[...byDay.keys()].sort().reverse();
 
-  if(!days.length && !state.ruleBreaks.length){
+  // ---- cycle history: each cycle is a saved record (recomputed from its trades) ----
+  const cyclesSorted=[...state.cycles].sort((a,b)=>b.startDate-a.startDate);
+  const cycleCards=cyclesSorted.map(c=>{
+    const sm=cycleSummary(c);
+    const isActive=c.status==="ACTIVE";
+    const statusBadge = isActive?`<span class="badge warn"><span class="dotled"></span>Đang chạy</span>`
+      : (sm.req>0 && sm.turnoverMet)?`<span class="badge pos">Đạt turnover</span>`
+      : sm.pnl>=0?`<span class="badge pos">Kết thúc</span>`
+      : `<span class="badge neg">Kết thúc</span>`;
+    const range=fmtDate(c.startDate)+" → "+(c.endDate?fmtDate(c.endDate):"nay");
+    const allRounds=reconstructRounds(tradesOf(c.id));
+    const rounds=allRounds.filter(r=>r.result!=="OPEN");
+    const {dist,won}=tierDistribution(allRounds);
+    const roundList=rounds.length? rounds.slice().reverse().map(r=>{
+        const seq=r.trades.map(t=>`<b class="${t.result==="WIN"?'W':'L'}">${t.result==="WIN"?'W':'L'}</b>`).join("");
+        const res=r.result==="WON"?`thắng T${r.winTier}`:`cháy ${r.tiers}`;
+        return `<div class="tradeline"><span><span class="seq">${seq}</span> <span style="color:var(--ink-3)">${res}</span></span><span class="${r.pnl>=0?'pos':'neg'}">${signed(r.pnl)}</span></div>`;
+      }).join("") : `<div class="empty" style="padding:14px 0">Chưa có vòng nào trong chu kỳ này.</div>`;
+    const distBlock=won>0?`<div style="margin:4px 0 8px"><div class="t2" style="margin-bottom:6px">Phân bổ tầng thắng (${won} vòng)</div>${barChart(dist.map((_,i)=>i+1),dist,{warnFrom:S.warningTier})}</div>`:"";
+    const turnBlock = sm.req>0
+      ? `<div class="pbar-row" style="margin-top:12px"><span>Turnover bonus (×${S.bonusTurnoverX})</span><span class="${sm.turnoverMet?'pos':''}">${money0(sm.turnover)} / ${money0(sm.req)}${sm.turnoverMet?' ✓':''}</span></div>
+         <div class="pbar"><span class="${sm.turnoverMet?'pos':'warn'}" style="width:${(clamp(sm.turnover/sm.req,0,1)*100).toFixed(0)}%"></span></div>`
+      : `<div class="stat" style="margin-top:10px"><span class="sub">Turnover ${money0(sm.turnover)} · không có bonus</span></div>`;
+    return `<div class="acc" data-acc><div class="acc-h" data-acc-h>
+        <span class="chev">${iChev}</span>
+        <div class="grow"><div class="t1">${range}</div><div class="t2">${sm.trades} lệnh · Nạp ${money0(sm.deposit)}${sm.bonus?` + Bonus ${money0(sm.bonus)}`:''}</div></div>
+        <div style="text-align:right"><div class="${sm.pnl>=0?'pos':'neg'} mono" style="font-weight:700">${signed(sm.pnl)}</div>${statusBadge}</div>
+      </div><div class="acc-body">
+        <div class="grid3">
+          <div class="stat"><span class="k">Vốn cuối</span><span class="v sm">${money0(sm.endEquity)}</span></div>
+          <div class="stat"><span class="k">ROI</span><span class="v sm ${sm.roiPct>=0?'pos':'neg'}">${(sm.roiPct>=0?'+':'')}${pct(sm.roiPct,1)}</span></div>
+          <div class="stat"><span class="k">Win rate</span><span class="v sm">${pct(sm.winRate)}</span></div>
+        </div>
+        ${turnBlock}
+        <div class="stat" style="margin-top:10px"><span class="sub">Thắng ${sm.wins}/${sm.trades} lệnh${c.endDate?` · kết thúc ${fmtDateFull(c.endDate)}`:''}</span></div>
+        ${distBlock}
+        <div class="sep"></div>
+        <div class="t2" style="margin-bottom:2px">Các vòng (${rounds.length})</div>
+        ${roundList}
+      </div></div>`;
+  }).join("");
+  const cycleHistoryCard = state.cycles.length? `<div class="card"><h3>${iCycleSm} Lịch sử chu kỳ <span style="color:var(--ink-3);font-weight:500;font-size:11px">· ${state.cycles.length} chu kỳ</span></h3>${cycleCards}</div>`:"";
+
+  if(!state.cycles.length && !days.length && !state.ruleBreaks.length){
     return `<section class="view"><div class="view-head"><span class="eyebrow">History</span><h2>Nhật ký</h2></div><div class="card"><div class="empty"><b>Chưa có lệnh nào</b>Vào tab “Vào lệnh” để bắt đầu ghi nhận chuỗi Martingale.</div></div></section>`;
   }
 
@@ -936,7 +1020,7 @@ function viewLog(){
   const breaks = state.ruleBreaks.length? `<div class="card"><h3>${iAlertSm} Vi phạm kỷ luật (${state.ruleBreaks.length})</h3>
     ${state.ruleBreaks.slice().reverse().map(b=>`<div class="tradeline"><span>${fmtDateFull(b.date)} ${fmtTime(b.date)}</span><span class="neg">${esc(reasonLabel(b.reason))}</span></div>`).join("")}</div>`:"";
 
-  return `<section class="view"><div class="view-head"><span class="eyebrow">History</span><h2>Nhật ký</h2></div>${dayCards}${breaks}</section>`;
+  return `<section class="view"><div class="view-head"><span class="eyebrow">History</span><h2>Nhật ký</h2></div>${cycleHistoryCard}${dayCards?`<div class="subhead">Chi tiết theo ngày</div>${dayCards}`:""}${breaks}</section>`;
 }
 function reasonLabel(r){ return ({edge_gate_bypass:"Bỏ qua Edge Gate", reopen_session:"Mở lại phiên đã khóa"})[r]||r; }
 
@@ -1073,7 +1157,7 @@ async function newCycle(){
   const bon=parseFloat(document.getElementById("c-bonus").value)||0;
   // deactivate current
   const cur=activeCycle();
-  if(cur){ cur.status="COMPLETED"; await put("cycles",cur); }
+  if(cur){ cur.status="COMPLETED"; cur.endDate=Date.now(); await put("cycles",cur); }
   const c={ id:uid(), startDate:Date.now(), deposit:dep, bonus:bon, status:"ACTIVE" };
   state.cycles.push(c); await put("cycles",c);
   state.activeRound=null; await setMeta("activeRound",null);
@@ -1081,10 +1165,10 @@ async function newCycle(){
 }
 async function closeCycle(){
   const c=activeCycle(); if(!c) return;
-  if(!confirm("Kết thúc chu kỳ hiện tại? Dữ liệu lệnh vẫn được giữ lại.")) return;
-  c.status="COMPLETED"; await put("cycles",c);
+  if(!confirm("Kết thúc chu kỳ hiện tại? Toàn bộ lịch sử lệnh của chu kỳ sẽ được LƯU LẠI và xem được ở tab Nhật ký → Lịch sử chu kỳ.")) return;
+  c.status="COMPLETED"; c.endDate=Date.now(); await put("cycles",c);
   state.activeRound=null; await setMeta("activeRound",null);
-  toast("Đã kết thúc chu kỳ."); syncDebounced(); render();
+  toast("Đã lưu & kết thúc chu kỳ. Xem lại ở Nhật ký → Lịch sử chu kỳ.","pos"); syncDebounced(); render();
 }
 async function saveSettings(){
   const S=state.settings;
@@ -1208,6 +1292,7 @@ function iGear(){return `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/
 const iTarget=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5C7AA6" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" fill="#5C7AA6"/></svg>`;
 const iCycle=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5C7AA6" stroke-width="2"><path d="M4 12a8 8 0 0 1 13-6M20 12a8 8 0 0 1-13 6"/><path d="M17 3v3h-3M7 21v-3h3"/></svg>`;
 const iChart=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5C7AA6" stroke-width="2"><path d="M4 19V5M4 19h16M8 15l3-4 3 2 4-6"/></svg>`;
+const iStats=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5C7AA6" stroke-width="2" stroke-linecap="round"><line x1="6" y1="20" x2="6" y2="12"/><line x1="12" y1="20" x2="12" y2="5"/><line x1="18" y1="20" x2="18" y2="9"/></svg>`;
 const iShieldSm=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5C7AA6" stroke-width="2"><path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z"/></svg>`;
 const iAlertSm=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#E0A03A" stroke-width="2"><path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17h.01"/></svg>`;
 const iCycleSm=iCycle, iBoltSm=`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5C7AA6" stroke-width="2"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>`;
